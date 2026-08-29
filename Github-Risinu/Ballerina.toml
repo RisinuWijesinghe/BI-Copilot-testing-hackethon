@@ -1,0 +1,3 @@
+[workspace]
+title = "Github-Risinu"
+packages = ["release_automation_new"]

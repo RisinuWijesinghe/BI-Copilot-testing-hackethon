@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "release_automation_new"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "release-automation-new"
+
+[build-options]
+sticky = true
