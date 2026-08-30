@@ -1,0 +1,8 @@
+[package]
+org = "risinu_wijesinghe"
+name = "github_issue_server_existing"
+version = "0.1.0"
+distribution = "2201.13.5-20260806-095500-8ec89718"
+
+[build-options]
+observabilityIncluded = true
