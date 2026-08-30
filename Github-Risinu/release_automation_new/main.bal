@@ -1,15 +1,20 @@
+import ballerina/file;
 import ballerina/http;
+import ballerina/io;
 import ballerina/log;
 import ballerinax/github;
 
 service /releases on new http:Listener(9090) {
 
     # Cuts a new release by finding the previous published release, building a changelog of every
-    # commit since that release, creating an annotated tag, and publishing a draft GitHub release.
+    # commit since that release, verifying the head commit's combined status and check runs, creating
+    # an annotated tag, publishing a draft GitHub release with the build artifact attached, running the
+    # post-release smoke test workflow against the new tag, and publishing the release once it succeeds.
     #
-    # + request - The release-cut request containing owner, repo, and semver version
-    # + return - The created release details, a conflict error if the tag already exists, or a generic error
-    resource function post cut(@http:Payload CutReleaseRequest request) returns CutReleaseResponse|http:Conflict|http:InternalServerError {
+    # + request - The release-cut request containing owner, repo, semver version, and artifact path
+    # + return - The created release details, a conflict error if the tag already exists, an unprocessable
+    # entity error if the head commit is not safe to release, or a generic error
+    resource function post cut(@http:Payload CutReleaseRequest request) returns CutReleaseResponse|http:Conflict|http:UnprocessableEntity|http:InternalServerError {
         string owner = request.owner;
         string repo = request.repo;
         string version = request.version;
@@ -47,7 +52,39 @@ service /releases on new http:Listener(9090) {
         }
         string headSha = headRef.'object.sha;
 
-        // 4. List every commit between the previous tag and the target branch head.
+        // 4. Verify it is safe to proceed: the combined status and every required check run for the
+        // head commit must have succeeded before a tag is created.
+        string?|error combinedStatusFailure = verifyCombinedStatus(owner, repo, headSha);
+        if combinedStatusFailure is error {
+            string errorMessage = string `Failed to fetch combined status for ${headSha} in ${owner}/${repo}: ${combinedStatusFailure.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+        if combinedStatusFailure is string {
+            log:printWarn(combinedStatusFailure);
+            return <http:UnprocessableEntity>{
+                body: {message: combinedStatusFailure}
+            };
+        }
+
+        string?|error checkRunsFailure = verifyCheckRuns(owner, repo, headSha);
+        if checkRunsFailure is error {
+            string errorMessage = string `Failed to fetch check runs for ${headSha} in ${owner}/${repo}: ${checkRunsFailure.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+        if checkRunsFailure is string {
+            log:printWarn(checkRunsFailure);
+            return <http:UnprocessableEntity>{
+                body: {message: checkRunsFailure}
+            };
+        }
+
+        // 5. List every commit between the previous tag and the target branch head.
         github:Commit[] commits;
         if previousTagName != "" {
             string basehead = string `${previousTagName}...${headSha}`;
@@ -72,11 +109,11 @@ service /releases on new http:Listener(9090) {
             commits = allCommits;
         }
 
-        // 5. Build the changelog grouped by conventional-commit type.
+        // 6. Build the changelog grouped by conventional-commit type.
         Changelog changelog = buildChangelog(commits);
         string changelogBody = renderChangelog(changelog);
 
-        // 6. Create an annotated tag object pointing at the head commit.
+        // 7. Create an annotated tag object pointing at the head commit.
         github:GitTagsBody tagPayload = {
             tag: tagName,
             message: string `Release ${tagName}`,
@@ -92,7 +129,7 @@ service /releases on new http:Listener(9090) {
             };
         }
 
-        // 7. Create the matching refs/tags/ ref pointing at the tag object.
+        // 8. Create the matching refs/tags/ ref pointing at the tag object.
         github:GitRefsBody refPayload = {
             ref: string `refs/tags/${tagName}`,
             sha: createdTag.sha
@@ -106,7 +143,7 @@ service /releases on new http:Listener(9090) {
             };
         }
 
-        // 8. Create a draft GitHub release with the changelog as the body.
+        // 9. Create a draft GitHub release with the changelog as the body.
         github:RepoReleasesBody releasePayload = {
             tagName: tagName,
             targetCommitish: headSha,
@@ -122,14 +159,96 @@ service /releases on new http:Listener(9090) {
                 body: {message: errorMessage}
             };
         }
+        int releaseId = createdRelease.id;
+
+        // 10. Upload the build artifact at the given file path as a release asset.
+        byte[]|error artifactBytes = io:fileReadBytes(request.artifactPath);
+        if artifactBytes is error {
+            string errorMessage = string `Failed to read artifact at '${request.artifactPath}': ${artifactBytes.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+        string|error artifactName = file:basename(request.artifactPath);
+        if artifactName is error {
+            string errorMessage = string `Failed to derive artifact name from '${request.artifactPath}': ${artifactName.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+        github:ReleaseAsset|error uploadedAsset = githubClient->/repos/[owner]/[repo]/releases/[releaseId]/assets.post(artifactBytes, name = artifactName);
+        if uploadedAsset is error {
+            string errorMessage = string `Failed to upload release asset '${artifactName}' for '${tagName}' in ${owner}/${repo}: ${uploadedAsset.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+
+        // 11. Trigger the post-release smoke test workflow via workflow dispatch against the new tag.
+        github:WorkflowIdDispatchesBody dispatchPayload = {
+            ref: tagName
+        };
+        error? dispatchResult = githubClient->/repos/[owner]/[repo]/actions/workflows/[smokeTestWorkflowFile]/dispatches.post(dispatchPayload);
+        if dispatchResult is error {
+            string errorMessage = string `Failed to dispatch workflow '${smokeTestWorkflowFile}' against '${tagName}' in ${owner}/${repo}: ${dispatchResult.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+
+        // 12. Locate the dispatched run and follow it until it concludes.
+        github:WorkflowRun|error dispatchedRun = findDispatchedWorkflowRun(owner, repo, smokeTestWorkflowFile, tagName, workflowRunPollMaxAttempts, workflowRunPollIntervalSeconds);
+        if dispatchedRun is error {
+            string errorMessage = string `Failed to locate the dispatched run of '${smokeTestWorkflowFile}' for '${tagName}' in ${owner}/${repo}: ${dispatchedRun.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+        github:WorkflowRun|error completedRun = awaitWorkflowRunCompletion(owner, repo, dispatchedRun.id, workflowRunPollMaxAttempts, workflowRunPollIntervalSeconds);
+        if completedRun is error {
+            string errorMessage = string `Smoke test workflow run for '${tagName}' in ${owner}/${repo} did not complete in time: ${completedRun.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+
+        // 13. Publish the draft release only if the smoke test workflow run succeeded.
+        string? runConclusion = completedRun.conclusion;
+        if runConclusion is () || runConclusion != "success" {
+            string conclusionText = runConclusion is string ? runConclusion : "unknown";
+            string errorMessage = string `Smoke test workflow run for '${tagName}' in ${owner}/${repo} concluded with '${conclusionText}'. Release '${tagName}' remains a draft: ${completedRun.htmlUrl}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+
+        github:ReleasesreleaseIdBody publishPayload = {
+            draft: false
+        };
+        github:Release|error publishedRelease = githubClient->/repos/[owner]/[repo]/releases/[releaseId].patch(publishPayload);
+        if publishedRelease is error {
+            string errorMessage = string `Smoke test succeeded but failed to publish release '${tagName}' in ${owner}/${repo}: ${publishedRelease.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
 
         return {
             tagName: tagName,
             previousTagName: previousTagName,
-            releaseUrl: createdRelease.url,
-            releaseHtmlUrl: createdRelease.htmlUrl,
-            draft: createdRelease.draft,
-            changelogBody: changelogBody
+            releaseUrl: publishedRelease.url,
+            releaseHtmlUrl: publishedRelease.htmlUrl,
+            draft: publishedRelease.draft,
+            changelogBody: changelogBody,
+            smokeTestWorkflowRunUrl: completedRun.htmlUrl
         };
     }
 }

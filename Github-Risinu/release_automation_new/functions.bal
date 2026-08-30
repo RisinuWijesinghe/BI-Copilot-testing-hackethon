@@ -1,5 +1,9 @@
 import ballerina/lang.regexp;
+import ballerina/lang.runtime;
 import ballerinax/github;
+
+// Terminal check-run conclusions that indicate the check did not succeed.
+final string[] nonSuccessfulCheckConclusions = ["failure", "cancelled", "timed_out", "action_required"];
 
 // Conventional commit header pattern: type(optional scope)(optional !): description
 final regexp:RegExp conventionalCommitPattern = re `^(feat|fix|perf|chore)(\([^)]*\))?!?:\s*(.*)$`;
@@ -112,4 +116,92 @@ function renderChangelog(Changelog changelog) returns string {
         return "No changes.";
     }
     return body.trim();
+}
+
+// Verifies the combined commit status for the given ref, failing unless every status has succeeded.
+function verifyCombinedStatus(string owner, string repo, string headSha) returns string?|error {
+    github:CombinedCommitStatus combinedStatus = check githubClient->/repos/[owner]/[repo]/commits/[headSha]/status;
+    if combinedStatus.state != "success" {
+        github:SimpleCommitStatus[] statuses = combinedStatus.statuses;
+        string[] failingContexts = [];
+        foreach github:SimpleCommitStatus statusEntry in statuses {
+            if statusEntry.state != "success" {
+                failingContexts.push(string `${statusEntry.context} (${statusEntry.state})`);
+            }
+        }
+        string failingList = string:'join(", ", ...failingContexts);
+        return string `Combined status for ${headSha} is '${combinedStatus.state}'. Failing/pending contexts: ${failingList}`;
+    }
+    return ();
+}
+
+// Verifies every required check run for the given ref has completed successfully.
+function verifyCheckRuns(string owner, string repo, string headSha) returns string?|error {
+    github:CheckRunResponse checkRunResponse = check githubClient->/repos/[owner]/[repo]/commits/[headSha]/check\-runs(filter = "latest");
+    github:CheckRun[] checkRuns = checkRunResponse.checkRuns;
+    string[] failingChecks = [];
+    foreach github:CheckRun checkRun in checkRuns {
+        if checkRun.status != "completed" {
+            failingChecks.push(string `${checkRun.name} (${checkRun.status})`);
+            continue;
+        }
+        string? conclusion = checkRun.conclusion;
+        if conclusion is () {
+            failingChecks.push(string `${checkRun.name} (no conclusion)`);
+            continue;
+        }
+        boolean isNonSuccessful = nonSuccessfulCheckConclusions.indexOf(conclusion) is int;
+        if isNonSuccessful {
+            failingChecks.push(string `${checkRun.name} (${conclusion})`);
+        }
+    }
+    if failingChecks.length() > 0 {
+        string failingList = string:'join(", ", ...failingChecks);
+        return string `Required check run(s) have not succeeded for ${headSha}: ${failingList}`;
+    }
+    return ();
+}
+
+// Locates the workflow run that was just dispatched for the given tag by picking the most recently
+// created run for that workflow file triggered by a workflow_dispatch event against the tag ref.
+function findDispatchedWorkflowRun(string owner, string repo, string workflowFile, string tagName, int maxAttempts, decimal pollIntervalSeconds) returns github:WorkflowRun|error {
+    string workflowPathSuffix = string `/${workflowFile}`;
+    int attempt = 0;
+    while attempt < maxAttempts {
+        github:WorkflowRunResponse runsResponse = check githubClient->/repos/[owner]/[repo]/actions/runs(event = "workflow_dispatch", branch = tagName, perPage = 10);
+        github:WorkflowRun[] workflowRuns = runsResponse.workflowRuns;
+        foreach github:WorkflowRun workflowRun in workflowRuns {
+            if workflowRun.path.endsWith(workflowPathSuffix) {
+                return workflowRun;
+            }
+        }
+        attempt += 1;
+        if attempt < maxAttempts {
+            runtime:sleep(pollIntervalSeconds);
+        }
+    }
+    return error(string `Timed out waiting for a dispatched run of '${workflowFile}' against '${tagName}' in ${owner}/${repo} to appear`);
+}
+
+// Polls a workflow run until it reaches a terminal (completed) state, or the attempt budget is exhausted.
+function awaitWorkflowRunCompletion(string owner, string repo, int runId, int maxAttempts, decimal pollIntervalSeconds) returns github:WorkflowRun|error {
+    int attempt = 0;
+    while attempt < maxAttempts {
+        github:WorkflowRunResponse runsResponse = check githubClient->/repos/[owner]/[repo]/actions/runs(perPage = 30);
+        github:WorkflowRun[] workflowRuns = runsResponse.workflowRuns;
+        foreach github:WorkflowRun workflowRun in workflowRuns {
+            if workflowRun.id == runId {
+                string? runStatus = workflowRun.status;
+                if runStatus is string && runStatus == "completed" {
+                    return workflowRun;
+                }
+                break;
+            }
+        }
+        attempt += 1;
+        if attempt < maxAttempts {
+            runtime:sleep(pollIntervalSeconds);
+        }
+    }
+    return error(string `Timed out waiting for workflow run ${runId} in ${owner}/${repo} to complete`);
 }

@@ -4,6 +4,7 @@ public type CutReleaseRequest record {|
     string repo;
     string version;
     string targetBranch = "main";
+    string artifactPath;
 |};
 
 // A single commit entry included in the changelog
@@ -30,6 +31,7 @@ public type CutReleaseResponse record {|
     string releaseHtmlUrl;
     boolean draft;
     string changelogBody;
+    string smokeTestWorkflowRunUrl;
 |};
 
 // Error response returned when the release cannot be cut
