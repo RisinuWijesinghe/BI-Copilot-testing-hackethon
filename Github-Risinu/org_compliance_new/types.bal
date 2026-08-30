@@ -64,3 +64,27 @@ public type ComplianceReport record {|
     int nonCompliantRepositories;
     RepositoryComplianceResult[] repositories;
 |};
+
+// A single file created or updated on the remediation branch.
+public type RemediationFileChange record {|
+    string path;
+    "created"|"updated" action;
+|};
+
+// Result of a successful remediation run for a repository.
+public type RemediationResult record {|
+    string owner;
+    string repo;
+    string branchName;
+    RemediationFileChange[] filesChanged;
+    string pullRequestUrl;
+    int pullRequestNumber;
+    "created"|"updated" pullRequestAction;
+    string[] remediatedChecks;
+|};
+
+// Returned when a repository already satisfies the CODEOWNERS and LICENSE checks, so no
+// remediation branch or pull request was needed.
+public type RemediationNotNeeded record {|
+    string message;
+|};

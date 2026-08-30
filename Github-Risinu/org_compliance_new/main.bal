@@ -38,4 +38,22 @@ service /compliance on new http:Listener(9090) {
             repositories: repositoryResults
         };
     }
+
+    # Remediates missing CODEOWNERS/LICENSE compliance issues for a single repository: creates
+    # (or reuses) a branch off the default branch, commits the missing file(s) through the
+    # contents API, and opens (or updates) a pull request listing the remediated checks.
+    #
+    # + owner - The repository owner (user or organization)
+    # + repo - The repository name
+    # + return - The remediation result, a message when no remediation was needed because the
+    # repository already has both files, or an internal server error if remediation failed
+    resource function post remediate/[string owner]/[string repo]() returns RemediationResult|RemediationNotNeeded|http:InternalServerError {
+        RemediationResult|RemediationNotNeeded|error remediationOutcome = remediateRepository(owner, repo);
+        if remediationOutcome is error {
+            return <http:InternalServerError>{
+                body: {message: string `Failed to remediate compliance issues for '${owner}/${repo}': ${remediationOutcome.message()}`}
+            };
+        }
+        return remediationOutcome;
+    }
 }
