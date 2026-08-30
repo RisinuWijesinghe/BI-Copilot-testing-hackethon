@@ -10,7 +10,8 @@ configurable map<string> codeownersTeamMapping = ?;
 // Copyright holder name to embed in generated LICENSE files during remediation.
 configurable string licenseCopyrightHolder = ?;
 
-final github:Client githubClient = check new ({
+// Not `final` so that tests can substitute a mock client via `test:mock` (see tests/).
+github:Client githubClient = check new ({
     auth: {
         token: githubToken
     }

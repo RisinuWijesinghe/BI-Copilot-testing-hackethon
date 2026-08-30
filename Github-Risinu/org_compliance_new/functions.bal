@@ -7,6 +7,22 @@ import ballerinax/github;
 // instead of creating duplicates.
 final string remediationBranchName = "compliance/remediation";
 
+// The GitHub connector's generated client surfaces failed calls with the HTTP reason phrase in
+// the error message (e.g. "Not Found", "Forbidden"), not the numeric status code, so status-code
+// detection must match on the phrase rather than substring-matching digits against the message.
+final regexp:RegExp notFoundErrorPattern = re `(?i:not\s*found)`;
+final regexp:RegExp forbiddenErrorPattern = re `(?i:forbidden)`;
+
+// True when the given error message indicates the request failed with an HTTP 404 (Not Found).
+function isNotFoundError(string errorMessage) returns boolean {
+    return notFoundErrorPattern.find(errorMessage) is regexp:Span;
+}
+
+// True when the given error message indicates the request failed with an HTTP 403 (Forbidden).
+function isForbiddenError(string errorMessage) returns boolean {
+    return forbiddenErrorPattern.find(errorMessage) is regexp:Span;
+}
+
 // Candidate locations where a CODEOWNERS file may live, in the order GitHub itself checks them.
 final string[] codeownersLocations = [".github/CODEOWNERS", "docs/CODEOWNERS", "CODEOWNERS"];
 
@@ -56,7 +72,7 @@ function checkBranchProtection(string owner, string repo, string defaultBranch) 
     github:BranchProtection|error branchProtection = githubClient->/repos/[owner]/[repo]/branches/[defaultBranch]/protection;
     if branchProtection is error {
         string errorMessage = branchProtection.message();
-        if errorMessage.includes("403") {
+        if isForbiddenError(errorMessage) {
             return {
                 status: "unknown",
                 requiresApprovingReview: false,
@@ -503,7 +519,7 @@ function getFileShaOnBranch(string owner, string repo, string path, string branc
     }
     if content is error {
         string errorMessage = content.message();
-        if errorMessage.includes("404") {
+        if isNotFoundError(errorMessage) {
             return ();
         }
         return content;
@@ -561,6 +577,14 @@ function buildRemediationPrBody(string[] failedChecks) returns string {
     return "This pull request was opened automatically to remediate the following failed compliance checks:\n\n" + checklist;
 }
 
+// Ensures the remediation branch exists (creating it off the default branch on first use, and
+// reusing it thereafter) and then commits the given file to it. The branch is therefore only
+// ever created at the point a file is actually about to be committed, never speculatively.
+function ensureBranchAndCommitFile(string owner, string repo, string defaultBranch, string branchName, string path, string contentText, string commitMessage) returns "created"|"updated"|error {
+    check ensureRemediationBranch(owner, repo, defaultBranch, branchName);
+    return createOrUpdateFile(owner, repo, path, contentText, commitMessage, branchName);
+}
+
 // Remediates a single repository: for any of CODEOWNERS/LICENSE that are missing, creates (or
 // reuses) a remediation branch, commits the missing file(s), and opens (or updates) a pull
 // request listing the remediated checks.
@@ -580,21 +604,19 @@ function remediateRepository(string owner, string repo) returns RemediationResul
         };
     }
 
-    check ensureRemediationBranch(owner, repo, defaultBranch, remediationBranchName);
-
     RemediationFileChange[] filesChanged = [];
     string[] remediatedChecks = [];
 
     if codeownersMissing {
         string codeownersContent = generateCodeownersContent(codeownersTeamMapping);
-        "created"|"updated" action = check createOrUpdateFile(owner, repo, ".github/CODEOWNERS", codeownersContent, "chore: add CODEOWNERS for compliance remediation", remediationBranchName);
+        "created"|"updated" action = check ensureBranchAndCommitFile(owner, repo, defaultBranch, remediationBranchName, ".github/CODEOWNERS", codeownersContent, "chore: add CODEOWNERS for compliance remediation");
         filesChanged.push({path: ".github/CODEOWNERS", action});
         remediatedChecks.push("CODEOWNERS");
     }
 
     if licenseMissing {
         string licenseContent = generateApache2LicenseContent(licenseCopyrightHolder);
-        "created"|"updated" action = check createOrUpdateFile(owner, repo, "LICENSE", licenseContent, "chore: add LICENSE for compliance remediation", remediationBranchName);
+        "created"|"updated" action = check ensureBranchAndCommitFile(owner, repo, defaultBranch, remediationBranchName, "LICENSE", licenseContent, "chore: add LICENSE for compliance remediation");
         filesChanged.push({path: "LICENSE", action});
         remediatedChecks.push("LICENSE");
     }
