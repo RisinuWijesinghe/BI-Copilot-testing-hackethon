@@ -20,11 +20,49 @@ service /releases on new http:Listener(9090) {
         string version = request.version;
         string targetBranch = request.targetBranch;
         string tagName = version.startsWith("v") ? version : string `v${version}`;
+        string idempotencyKey = string `${owner}/${repo}/${tagName}`;
 
-        // 1. Fail fast if the tag already exists.
+        // 0. Idempotency short-circuit: replay the cached terminal outcome of a previous call with the
+        // same owner/repo/version instead of repeating any side effect.
+        CutReleaseOutcome? cachedOutcome = getCachedOutcome(idempotencyKey);
+        if cachedOutcome is CutReleaseOutcome {
+            return toCutReleaseResult(cachedOutcome);
+        }
+
+        // 1. Fail fast if the tag/release already exists, without caching (so unrelated pre-existing
+        // tags remain a plain conflict rather than being remembered as this endpoint's own outcome).
+        github:Release?|error existingReleaseResult = findReleaseByTag(owner, repo, tagName);
+        if existingReleaseResult is error {
+            string errorMessage = string `Failed to check for an existing release for '${tagName}' in ${owner}/${repo}: ${existingReleaseResult.message()}`;
+            log:printError(errorMessage);
+            return <http:InternalServerError>{
+                body: {message: errorMessage}
+            };
+        }
+        if existingReleaseResult is github:Release {
+            github:Release existingRelease = existingReleaseResult;
+            if !existingRelease.draft {
+                CutReleaseResponse response = {
+                    tagName: tagName,
+                    previousTagName: "",
+                    releaseUrl: existingRelease.url,
+                    releaseHtmlUrl: existingRelease.htmlUrl,
+                    draft: existingRelease.draft,
+                    changelogBody: existingRelease?.body ?: "",
+                    smokeTestWorkflowRunUrl: ""
+                };
+                cacheOutcome(idempotencyKey, {response});
+                return response;
+            }
+            string conflictMessage = string `Release '${tagName}' already exists as a draft in ${owner}/${repo}; a previous cut is still in progress or was left incomplete`;
+            log:printWarn(conflictMessage);
+            return <http:Conflict>{
+                body: {message: conflictMessage}
+            };
+        }
         github:GitRef|error existingRef = githubClient->/repos/[owner]/[repo]/git/ref/["tags/" + tagName];
         if existingRef is github:GitRef {
-            string conflictMessage = string `Tag '${tagName}' already exists in ${owner}/${repo}`;
+            string conflictMessage = string `Tag '${tagName}' already exists in ${owner}/${repo} without a matching release`;
             log:printWarn(conflictMessage);
             return <http:Conflict>{
                 body: {message: conflictMessage}
@@ -200,8 +238,9 @@ service /releases on new http:Listener(9090) {
             };
         }
 
-        // 12. Locate the dispatched run and follow it until it concludes.
-        github:WorkflowRun|error dispatchedRun = findDispatchedWorkflowRun(owner, repo, smokeTestWorkflowFile, tagName, workflowRunPollMaxAttempts, workflowRunPollIntervalSeconds);
+        // 12. Locate the dispatched run and follow it until it concludes, backing off between polls
+        // instead of spinning, bounded by the smoke test timeout.
+        github:WorkflowRun|error dispatchedRun = findDispatchedWorkflowRun(owner, repo, smokeTestWorkflowFile, tagName, smokeTestTimeoutSeconds);
         if dispatchedRun is error {
             string errorMessage = string `Failed to locate the dispatched run of '${smokeTestWorkflowFile}' for '${tagName}' in ${owner}/${repo}: ${dispatchedRun.message()}`;
             log:printError(errorMessage);
@@ -209,21 +248,34 @@ service /releases on new http:Listener(9090) {
                 body: {message: errorMessage}
             };
         }
-        github:WorkflowRun|error completedRun = awaitWorkflowRunCompletion(owner, repo, dispatchedRun.id, workflowRunPollMaxAttempts, workflowRunPollIntervalSeconds);
+        github:WorkflowRun|error completedRun = awaitWorkflowRunCompletion(owner, repo, dispatchedRun.id, smokeTestTimeoutSeconds);
         if completedRun is error {
-            string errorMessage = string `Smoke test workflow run for '${tagName}' in ${owner}/${repo} did not complete in time: ${completedRun.message()}`;
+            // The smoke test did not conclude within the timeout: roll back the tag and draft release.
+            FailedJob[]|error failedJobsResult = listFailedJobs(owner, repo, dispatchedRun.id);
+            FailedJob[] failedJobs = failedJobsResult is FailedJob[] ? failedJobsResult : [];
+            string|error rollbackResult = rollbackRelease(owner, repo, version, tagName, releaseId, dispatchedRun.htmlUrl, failedJobs);
+            string errorMessage = rollbackResult is string
+                ? string `Smoke test workflow run for '${tagName}' in ${owner}/${repo} did not conclude within the timeout. Release rolled back. Rollback issue: ${rollbackResult}`
+                : string `Smoke test workflow run for '${tagName}' in ${owner}/${repo} did not conclude within the timeout. ${rollbackResult.message()}`;
             log:printError(errorMessage);
+            cacheOutcome(idempotencyKey, {'error: {message: errorMessage}, statusCode: 500});
             return <http:InternalServerError>{
                 body: {message: errorMessage}
             };
         }
 
-        // 13. Publish the draft release only if the smoke test workflow run succeeded.
+        // 13. Publish the draft release only if the smoke test workflow run succeeded; otherwise roll back.
         string? runConclusion = completedRun.conclusion;
         if runConclusion is () || runConclusion != "success" {
             string conclusionText = runConclusion is string ? runConclusion : "unknown";
-            string errorMessage = string `Smoke test workflow run for '${tagName}' in ${owner}/${repo} concluded with '${conclusionText}'. Release '${tagName}' remains a draft: ${completedRun.htmlUrl}`;
+            FailedJob[]|error failedJobsResult = listFailedJobs(owner, repo, completedRun.id);
+            FailedJob[] failedJobs = failedJobsResult is FailedJob[] ? failedJobsResult : [];
+            string|error rollbackResult = rollbackRelease(owner, repo, version, tagName, releaseId, completedRun.htmlUrl, failedJobs);
+            string errorMessage = rollbackResult is string
+                ? string `Smoke test workflow run for '${tagName}' in ${owner}/${repo} concluded with '${conclusionText}'. Release rolled back. Rollback issue: ${rollbackResult}`
+                : string `Smoke test workflow run for '${tagName}' in ${owner}/${repo} concluded with '${conclusionText}'. ${rollbackResult.message()}`;
             log:printError(errorMessage);
+            cacheOutcome(idempotencyKey, {'error: {message: errorMessage}, statusCode: 500});
             return <http:InternalServerError>{
                 body: {message: errorMessage}
             };
@@ -241,7 +293,7 @@ service /releases on new http:Listener(9090) {
             };
         }
 
-        return {
+        CutReleaseResponse successResponse = {
             tagName: tagName,
             previousTagName: previousTagName,
             releaseUrl: publishedRelease.url,
@@ -250,5 +302,7 @@ service /releases on new http:Listener(9090) {
             changelogBody: changelogBody,
             smokeTestWorkflowRunUrl: completedRun.htmlUrl
         };
+        cacheOutcome(idempotencyKey, {response: successResponse});
+        return successResponse;
     }
 }

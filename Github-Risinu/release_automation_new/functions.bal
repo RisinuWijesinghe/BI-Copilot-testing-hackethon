@@ -1,3 +1,4 @@
+import ballerina/http;
 import ballerina/lang.regexp;
 import ballerina/lang.runtime;
 import ballerinax/github;
@@ -162,12 +163,24 @@ function verifyCheckRuns(string owner, string repo, string headSha) returns stri
     return ();
 }
 
+// Computes the next back-off delay, capped at the configured maximum, so polling loops slow down
+// over time instead of spinning at a constant rate.
+function nextBackOffInterval(decimal currentIntervalSeconds) returns decimal {
+    decimal nextInterval = currentIntervalSeconds * workflowRunPollBackOffFactor;
+    if nextInterval > workflowRunPollMaxIntervalSeconds {
+        return workflowRunPollMaxIntervalSeconds;
+    }
+    return nextInterval;
+}
+
 // Locates the workflow run that was just dispatched for the given tag by picking the most recently
 // created run for that workflow file triggered by a workflow_dispatch event against the tag ref.
-function findDispatchedWorkflowRun(string owner, string repo, string workflowFile, string tagName, int maxAttempts, decimal pollIntervalSeconds) returns github:WorkflowRun|error {
+// Polling backs off exponentially instead of spinning at a fixed rate, bounded by deadlineSeconds.
+function findDispatchedWorkflowRun(string owner, string repo, string workflowFile, string tagName, decimal deadlineSeconds) returns github:WorkflowRun|error {
     string workflowPathSuffix = string `/${workflowFile}`;
-    int attempt = 0;
-    while attempt < maxAttempts {
+    decimal elapsedSeconds = 0;
+    decimal intervalSeconds = workflowRunPollInitialIntervalSeconds;
+    while true {
         github:WorkflowRunResponse runsResponse = check githubClient->/repos/[owner]/[repo]/actions/runs(event = "workflow_dispatch", branch = tagName, perPage = 10);
         github:WorkflowRun[] workflowRuns = runsResponse.workflowRuns;
         foreach github:WorkflowRun workflowRun in workflowRuns {
@@ -175,18 +188,22 @@ function findDispatchedWorkflowRun(string owner, string repo, string workflowFil
                 return workflowRun;
             }
         }
-        attempt += 1;
-        if attempt < maxAttempts {
-            runtime:sleep(pollIntervalSeconds);
+        if elapsedSeconds >= deadlineSeconds {
+            break;
         }
+        runtime:sleep(intervalSeconds);
+        elapsedSeconds += intervalSeconds;
+        intervalSeconds = nextBackOffInterval(intervalSeconds);
     }
     return error(string `Timed out waiting for a dispatched run of '${workflowFile}' against '${tagName}' in ${owner}/${repo} to appear`);
 }
 
-// Polls a workflow run until it reaches a terminal (completed) state, or the attempt budget is exhausted.
-function awaitWorkflowRunCompletion(string owner, string repo, int runId, int maxAttempts, decimal pollIntervalSeconds) returns github:WorkflowRun|error {
-    int attempt = 0;
-    while attempt < maxAttempts {
+// Polls a workflow run until it reaches a terminal (completed) state, or the deadline is exhausted.
+// Uses an exponential back-off between polls instead of a fixed interval to avoid spinning.
+function awaitWorkflowRunCompletion(string owner, string repo, int runId, decimal deadlineSeconds) returns github:WorkflowRun|error {
+    decimal elapsedSeconds = 0;
+    decimal intervalSeconds = workflowRunPollInitialIntervalSeconds;
+    while true {
         github:WorkflowRunResponse runsResponse = check githubClient->/repos/[owner]/[repo]/actions/runs(perPage = 30);
         github:WorkflowRun[] workflowRuns = runsResponse.workflowRuns;
         foreach github:WorkflowRun workflowRun in workflowRuns {
@@ -198,10 +215,96 @@ function awaitWorkflowRunCompletion(string owner, string repo, int runId, int ma
                 break;
             }
         }
-        attempt += 1;
-        if attempt < maxAttempts {
-            runtime:sleep(pollIntervalSeconds);
+        if elapsedSeconds >= deadlineSeconds {
+            break;
         }
+        runtime:sleep(intervalSeconds);
+        elapsedSeconds += intervalSeconds;
+        intervalSeconds = nextBackOffInterval(intervalSeconds);
     }
     return error(string `Timed out waiting for workflow run ${runId} in ${owner}/${repo} to complete`);
+}
+
+// Looks up an existing release for the given tag, returning () when no such release exists.
+function findReleaseByTag(string owner, string repo, string tagName) returns github:Release?|error {
+    github:Release|error release = githubClient->/repos/[owner]/[repo]/releases/tags/[tagName];
+    if release is github:Release {
+        return release;
+    }
+    return ();
+}
+
+// Lists the jobs that did not succeed within a concluded workflow run.
+function listFailedJobs(string owner, string repo, int runId) returns FailedJob[]|error {
+    github:JobResponse jobResponse = check githubClient->/repos/[owner]/[repo]/actions/runs/[runId]/jobs(filter = "latest");
+    github:Job[] jobs = jobResponse.jobs;
+    FailedJob[] failedJobs = [];
+    foreach github:Job jobEntry in jobs {
+        string? conclusion = jobEntry.conclusion;
+        boolean isNonSuccessful = conclusion is string && nonSuccessfulCheckConclusions.indexOf(conclusion) is int;
+        if isNonSuccessful {
+            string? jobHtmlUrl = jobEntry.htmlUrl;
+            failedJobs.push({
+                name: jobEntry.name,
+                htmlUrl: jobHtmlUrl is string ? jobHtmlUrl : ""
+            });
+        }
+    }
+    return failedJobs;
+}
+
+// Converts a cached outcome into the HTTP response the resource function should return, so a retry
+// with the same owner/repo/version replays the original result exactly.
+function toCutReleaseResult(CutReleaseOutcome outcome) returns CutReleaseResponse|http:Conflict|http:UnprocessableEntity|http:InternalServerError {
+    if outcome is record {| CutReleaseResponse response; |} {
+        return outcome.response;
+    }
+    CutReleaseError cachedError = outcome.'error;
+    int statusCode = outcome.statusCode;
+    if statusCode == http:STATUS_CONFLICT {
+        return <http:Conflict>{
+            body: cachedError
+        };
+    }
+    if statusCode == http:STATUS_UNPROCESSABLE_ENTITY {
+        return <http:UnprocessableEntity>{
+            body: cachedError
+        };
+    }
+    return <http:InternalServerError>{
+        body: cachedError
+    };
+}
+
+// Rolls back a release attempt: deletes the draft release and the tag ref, then opens an issue
+// documenting the failure, assigned to the release manager. Returns the rollback issue's HTML URL.
+function rollbackRelease(string owner, string repo, string version, string tagName, int releaseId, string workflowRunHtmlUrl, FailedJob[] failedJobs) returns string|error {
+    error? releaseDeletion = githubClient->/repos/[owner]/[repo]/releases/[releaseId].delete();
+    if releaseDeletion is error {
+        return error(string `Rollback failed: could not delete draft release '${tagName}' in ${owner}/${repo}: ${releaseDeletion.message()}`);
+    }
+
+    error? refDeletion = githubClient->/repos/[owner]/[repo]/git/refs/["tags/" + tagName].delete();
+    if refDeletion is error {
+        return error(string `Rollback failed: deleted draft release but could not delete ref 'refs/tags/${tagName}' in ${owner}/${repo}: ${refDeletion.message()}`);
+    }
+
+    string failedJobLines = failedJobs.length() > 0 ? "" : "- (no failed jobs reported)";
+    foreach FailedJob failedJob in failedJobs {
+        failedJobLines += string `- ${failedJob.name} (${failedJob.htmlUrl})` + "\n";
+    }
+    string issueBody = string `The post-release smoke test workflow run did not succeed, so release '${tagName}' has been rolled back.` + "\n\n" +
+        string `Workflow run: ${workflowRunHtmlUrl}` + "\n\n" +
+        "Failed jobs:" + "\n" + failedJobLines;
+
+    github:RepoIssuesBody issuePayload = {
+        title: string `Release ${version} rolled back`,
+        body: issueBody,
+        assignees: [releaseManagerGithubUsername]
+    };
+    github:Issue|error createdIssue = githubClient->/repos/[owner]/[repo]/issues.post(issuePayload);
+    if createdIssue is error {
+        return error(string `Rollback completed but failed to create the rollback issue for '${tagName}' in ${owner}/${repo}: ${createdIssue.message()}`);
+    }
+    return createdIssue.htmlUrl;
 }

@@ -38,3 +38,18 @@ public type CutReleaseResponse record {|
 public type CutReleaseError record {|
     string message;
 |};
+
+// A workflow job that did not succeed within a concluded workflow run
+public type FailedJob record {|
+    string name;
+    string htmlUrl;
+|};
+
+// Cached outcome of a /releases/cut invocation, keyed by owner/repo/tagName, so that a client
+// retry with the same version replays the original result instead of repeating side effects.
+public type CutReleaseOutcome record {|
+    CutReleaseResponse response;
+|}|record {|
+    CutReleaseError 'error;
+    int statusCode;
+|};
