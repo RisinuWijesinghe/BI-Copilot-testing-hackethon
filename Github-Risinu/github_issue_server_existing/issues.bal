@@ -40,3 +40,46 @@ isolated function getOpenIssues(string owner, string repo) returns IssueSummary[
             author: issue.user?.login ?: ""
         };
 }
+
+# Details required to file a new issue on GitHub.
+#
+# + title - Title of the issue
+# + body - Body content of the issue
+# + labels - Labels to associate with the issue
+# + assignees - Logins of the users to assign to the issue
+public type NewIssue record {|
+    string title;
+    string body?;
+    string[] labels?;
+    string[] assignees?;
+|};
+
+# Identifying information of a newly created issue.
+#
+# + number - Number uniquely identifying the issue within its repository
+# + url - Browser URL of the created issue
+public type CreatedIssue record {|
+    int number;
+    string url;
+|};
+
+# Creates a new issue on GitHub.
+#
+# + owner - Account owner of the repository
+# + repo - Name of the repository
+# + newIssue - Details of the issue to create
+# + return - The identifying information of the created issue, an `http:ClientRequestError` if GitHub rejected the
+# request (e.g. validation failure), or another error if the call otherwise fails
+isolated function createIssue(string owner, string repo, NewIssue newIssue) returns CreatedIssue|error {
+    github:RepoIssuesBody payload = {
+        title: newIssue.title,
+        body: newIssue?.body,
+        labels: newIssue?.labels,
+        assignees: newIssue?.assignees
+    };
+    github:Issue createdIssue = check githubClient->/repos/[owner]/[repo]/issues.post(payload);
+    return {
+        number: createdIssue.number,
+        url: createdIssue.htmlUrl
+    };
+}
