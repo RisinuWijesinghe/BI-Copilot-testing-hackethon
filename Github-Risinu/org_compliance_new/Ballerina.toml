@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "org_compliance_new"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "org_compliance_new"
+
+[build-options]
+sticky = true
