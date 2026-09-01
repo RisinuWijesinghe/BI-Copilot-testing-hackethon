@@ -44,3 +44,9 @@ public type RescheduleMeetingRequest record {|
     string endTime;
     string timeZone;
 |};
+
+// Response payload returned after a meeting is successfully cancelled (including when
+// it was already cancelled or never existed - the caller's desired outcome is already true).
+public type CancelMeetingResponse record {|
+    string message;
+|};

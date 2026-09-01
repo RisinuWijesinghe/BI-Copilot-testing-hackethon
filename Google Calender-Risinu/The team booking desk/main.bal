@@ -17,7 +17,15 @@ service /calendar on new http:Listener(servicePort) {
             };
         }
 
-        calendar:CalendarResource|error result = googleCalendarClient->createCalendar(calendarName);
+        CalendarService|error calendarClient = getCalendarClient();
+        if calendarClient is error {
+            UpstreamFailureError upstreamError = toUpstreamFailure(calendarClient, "getCalendarClient");
+            return <http:BadGateway>{
+                body: {message: upstreamError.message()}
+            };
+        }
+
+        calendar:CalendarResource|error result = calendarClient.createCalendar(calendarName);
         if result is error {
             UpstreamFailureError upstreamError = toUpstreamFailure(result, "createCalendar");
             return <http:BadGateway>{
@@ -52,6 +60,14 @@ service /calendar on new http:Listener(servicePort) {
             };
         }
 
+        CalendarService|error calendarClient = getCalendarClient();
+        if calendarClient is error {
+            UpstreamFailureError upstreamError = toUpstreamFailure(calendarClient, "getCalendarClient");
+            return <http:BadGateway>{
+                body: {message: upstreamError.message()}
+            };
+        }
+
         calendar:Attendee[] attendees = from string email in request.attendees
             select {email: email};
 
@@ -63,7 +79,7 @@ service /calendar on new http:Listener(servicePort) {
             attendees: attendees
         };
 
-        calendar:Event|error result = googleCalendarClient->createEvent(calendarId, inputEvent);
+        calendar:Event|error result = calendarClient.createEvent(calendarId, inputEvent);
         if result is error {
             UpstreamFailureError upstreamError = toUpstreamFailure(result, "createEvent");
             return <http:BadGateway>{
@@ -77,7 +93,9 @@ service /calendar on new http:Listener(servicePort) {
 
     // Returns the agenda for a calendar over a date range as individual occurrences,
     // sorted earliest first and capped at a sensible number of entries per request.
-    resource function get calendars/[string calendarId]/agenda(string startTime, string endTime, int maxResults = MAX_AGENDA_RESULTS)
+    // When a search phrase is supplied, only entries matching the title, description,
+    // location, or an attendee are returned.
+    resource function get calendars/[string calendarId]/agenda(string startTime, string endTime, string? search = (), int maxResults = MAX_AGENDA_RESULTS)
             returns AgendaItem[]|http:BadRequest|http:NotFound|http:BadGateway {
         time:Utc|error rangeStartUtc = time:utcFromString(startTime);
         if rangeStartUtc is error {
@@ -103,13 +121,21 @@ service /calendar on new http:Listener(servicePort) {
             };
         }
 
+        CalendarService|error calendarClient = getCalendarClient();
+        if calendarClient is error {
+            UpstreamFailureError upstreamError = toUpstreamFailure(calendarClient, "getCalendarClient");
+            return <http:BadGateway>{
+                body: {message: upstreamError.message()}
+            };
+        }
+
         calendar:EventFilterCriteria filter = {
             timeMin: startTime,
             timeMax: endTime,
             singleEvents: true,
             orderBy: calendar:START_TIME
         };
-        stream<calendar:Event, error?>|error eventStream = googleCalendarClient->getEvents(calendarId, filter);
+        stream<calendar:Event, error?>|error eventStream = calendarClient.getEvents(calendarId, filter);
         if eventStream is error {
             if isNotFoundFailure(eventStream) {
                 return <http:NotFound>{
@@ -122,9 +148,12 @@ service /calendar on new http:Listener(servicePort) {
             };
         }
 
-        AgendaItem[] agenda = [];
+        calendar:Event[] matchingEvents = [];
+        string? searchPhrase = search;
         error? streamError = eventStream.forEach(function(calendar:Event event) {
-            agenda.push(toAgendaItem(event));
+            if matchesOptionalSearchPhrase(event, searchPhrase) {
+                matchingEvents.push(event);
+            }
         });
         if streamError is error {
             if isNotFoundFailure(streamError) {
@@ -138,6 +167,8 @@ service /calendar on new http:Listener(servicePort) {
             };
         }
 
+        AgendaItem[] agenda = from calendar:Event event in matchingEvents
+            select toAgendaItem(event);
         int resultCount = agenda.length() > cappedMaxResults ? cappedMaxResults : agenda.length();
         return agenda.slice(0, resultCount);
     }
@@ -166,7 +197,15 @@ service /calendar on new http:Listener(servicePort) {
             };
         }
 
-        calendar:Event|error existingEvent = googleCalendarClient->getEvent(calendarId, eventId);
+        CalendarService|error calendarClient = getCalendarClient();
+        if calendarClient is error {
+            UpstreamFailureError upstreamError = toUpstreamFailure(calendarClient, "getCalendarClient");
+            return <http:BadGateway>{
+                body: {message: upstreamError.message()}
+            };
+        }
+
+        calendar:Event|error existingEvent = calendarClient.getEvent(calendarId, eventId);
         if existingEvent is error {
             if isNotFoundFailure(existingEvent) {
                 return <http:NotFound>{
@@ -188,7 +227,7 @@ service /calendar on new http:Listener(servicePort) {
             attendees: existingEvent.attendees
         };
 
-        calendar:Event|error result = googleCalendarClient->updateEvent(calendarId, eventId, updatedEvent, {sendUpdates: "all"});
+        calendar:Event|error result = calendarClient.updateEvent(calendarId, eventId, updatedEvent, {sendUpdates: "all"});
         if result is error {
             if isNotFoundFailure(result) {
                 return <http:NotFound>{
@@ -203,5 +242,32 @@ service /calendar on new http:Listener(servicePort) {
 
         string? eventLink = result.htmlLink;
         return {eventId: result.id, eventLink: eventLink ?: ""};
+    }
+
+    // Cancels a booked meeting and notifies the attendees. Calling this twice for the
+    // same meeting is not an error - once the meeting is gone, the caller's desired
+    // outcome already holds, so a repeat call is just as successful as the first.
+    resource function delete calendars/[string calendarId]/meetings/[string eventId]()
+            returns CancelMeetingResponse|http:BadGateway {
+        CalendarService|error calendarClient = getCalendarClient();
+        if calendarClient is error {
+            UpstreamFailureError upstreamError = toUpstreamFailure(calendarClient, "getCalendarClient");
+            return <http:BadGateway>{
+                body: {message: upstreamError.message()}
+            };
+        }
+
+        error? result = calendarClient.deleteEvent(calendarId, eventId);
+        if result is error {
+            if isNotFoundFailure(result) {
+                return {message: "The meeting has been cancelled."};
+            }
+            UpstreamFailureError upstreamError = toUpstreamFailure(result, "deleteEvent");
+            return <http:BadGateway>{
+                body: {message: upstreamError.message()}
+            };
+        }
+
+        return {message: "The meeting has been cancelled."};
     }
 }

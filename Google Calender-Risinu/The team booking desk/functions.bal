@@ -1,4 +1,5 @@
 import ballerina/http;
+import ballerina/lang.value;
 import ballerina/log;
 import ballerina/time;
 import ballerinax/googleapis.calendar;
@@ -53,6 +54,11 @@ function isNotFoundFailure(error cause) returns boolean {
             if statusCode == 404 {
                 return true;
             }
+        } else {
+            value:Cloneable & readonly detailValue = current.detail()["statusCode"];
+            if detailValue is int && detailValue == 404 {
+                return true;
+            }
         }
         current = current.cause();
     }
@@ -86,3 +92,37 @@ function toAgendaItem(calendar:Event event) returns AgendaItem => {
     location: event.location ?: "",
     attendees: toAttendeeEmails(event.attendees)
 };
+
+// Determines whether an agenda item matches an optional free-text search phrase. When
+// no phrase is supplied, every event matches.
+function matchesOptionalSearchPhrase(calendar:Event event, string? searchPhrase) returns boolean {
+    if searchPhrase is () {
+        return true;
+    }
+    return matchesSearchPhrase(event, searchPhrase);
+}
+
+// Determines whether an agenda item matches a free-text search phrase against the
+// fields a person would actually search by: title, description, location, or an attendee.
+function matchesSearchPhrase(calendar:Event event, string searchPhrase) returns boolean {
+    string normalizedPhrase = searchPhrase.toLowerAscii();
+    string title = (event.summary ?: "").toLowerAscii();
+    if title.includes(normalizedPhrase) {
+        return true;
+    }
+    string description = (event.description ?: "").toLowerAscii();
+    if description.includes(normalizedPhrase) {
+        return true;
+    }
+    string location = (event.location ?: "").toLowerAscii();
+    if location.includes(normalizedPhrase) {
+        return true;
+    }
+    string[] attendeeEmails = toAttendeeEmails(event.attendees);
+    foreach string attendeeEmail in attendeeEmails {
+        if attendeeEmail.toLowerAscii().includes(normalizedPhrase) {
+            return true;
+        }
+    }
+    return false;
+}
