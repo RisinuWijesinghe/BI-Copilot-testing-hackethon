@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "expense_claims_service"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Expense claims service"
+
+[build-options]
+sticky = true
