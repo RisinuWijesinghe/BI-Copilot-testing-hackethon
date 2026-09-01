@@ -71,3 +71,32 @@ function parseSheetRow((int|string|decimal)[] rowValues) returns SheetRowEntry? 
 
     return {category, amount};
 }
+
+// Label used for the grand total line at the bottom of the snapshot.
+final string grandTotalLabel = "Grand Total";
+
+# Builds the snapshot lines (one per category, plus a grand total line) from a claims summary.
+#
+# + summary - the aggregated claims summary for the current month
+# + return - the ordered snapshot lines, category lines first, grand total last
+function buildSnapshotLines(ClaimsSummary summary) returns SnapshotLine[] {
+    SnapshotLine[] lines = [];
+    foreach string category in allowedCategories {
+        decimal categoryTotal = summary.totalsByCategory.get(category);
+        lines.push({label: category, total: categoryTotal});
+    }
+    lines.push({label: grandTotalLabel, total: summary.overallTotal});
+    return lines;
+}
+
+# Maps snapshot lines to the row values written to the snapshot tab, including a header row.
+#
+# + lines - the snapshot lines to write
+# + return - the rows to write, starting with a header row
+function mapSnapshotLinesToRows(SnapshotLine[] lines) returns (int|string|decimal)[][] {
+    (int|string|decimal)[][] rows = [["Category", "Total"]];
+    foreach SnapshotLine line in lines {
+        rows.push([line.label, line.total]);
+    }
+    return rows;
+}

@@ -33,3 +33,15 @@ public type CategorySummary record {|
     decimal total;
     int skippedRowCount;
 |};
+
+# A single line of a frozen snapshot: either a category total or the grand total line.
+public type SnapshotLine record {|
+    string label;
+    decimal total;
+|};
+
+# Confirmation returned after a month-end snapshot has been written.
+public type SnapshotResult record {|
+    string message;
+    SnapshotLine[] lines;
+|};

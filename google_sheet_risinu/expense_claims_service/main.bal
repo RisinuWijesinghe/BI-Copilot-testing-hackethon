@@ -27,6 +27,33 @@ function readDataRows() returns (int|string|decimal)[][]|http:InternalServerErro
     return rangeResult.values;
 }
 
+# Ensures the snapshot tab exists, creating it if this is the first run.
+#
+# + return - `()` on success, or an `error` if the tab could not be verified or created
+function ensureSnapshotSheetExists() returns error? {
+    sheets:Sheet|error existingSheet = sheetsClient->getSheetByName(spreadsheetId, snapshotSheetName);
+    if existingSheet is sheets:Sheet {
+        return;
+    }
+
+    _ = check sheetsClient->addSheet(spreadsheetId, snapshotSheetName);
+}
+
+# Writes the given rows onto the snapshot tab, replacing its previous contents entirely so that
+# running the snapshot twice in a row leaves the tab identical rather than doubled up.
+#
+# + rows - the rows to write, including the header row
+# + return - `()` on success, or an `error` if the tab could not be cleared or written to
+function replaceSnapshotContents((int|string|decimal)[][] rows) returns error? {
+    check sheetsClient->clearAllBySheetName(spreadsheetId, snapshotSheetName);
+
+    int rowPosition = 1;
+    foreach (int|string|decimal)[] row in rows {
+        check sheetsClient->createOrUpdateRow(spreadsheetId, snapshotSheetName, rowPosition, row);
+        rowPosition += 1;
+    }
+}
+
 service /claims on new http:Listener(8080) {
 
     # Records a new expense claim as a row in the current month's Google Sheet.
@@ -87,5 +114,41 @@ service /claims on new http:Listener(8080) {
         }
 
         return aggregateCategorySummary(rowsValuesResult, category);
+    }
+
+    # Freezes a month-end snapshot of category totals onto a separate tab in the same spreadsheet.
+    # The tab is created the first time this is run, and its contents are fully replaced on every
+    # later run so that running the snapshot twice in a row leaves the tab identical rather than
+    # doubled up.
+    #
+    # + return - what was written to the snapshot tab, or a generic failure message
+    resource function post snapshot() returns SnapshotResult|http:InternalServerError {
+        (int|string|decimal)[][]|http:InternalServerError rowsValuesResult = readDataRows();
+        if rowsValuesResult is http:InternalServerError {
+            return rowsValuesResult;
+        }
+
+        ClaimsSummary summary = aggregateClaimsSummary(rowsValuesResult);
+        SnapshotLine[] lines = buildSnapshotLines(summary);
+        (int|string|decimal)[][] rows = mapSnapshotLinesToRows(lines);
+
+        error? sheetReadyResult = ensureSnapshotSheetExists();
+        if sheetReadyResult is error {
+            return <http:InternalServerError>{
+                body: {message: "could not record the claim, please retry"}
+            };
+        }
+
+        error? writeResult = replaceSnapshotContents(rows);
+        if writeResult is error {
+            return <http:InternalServerError>{
+                body: {message: "could not record the claim, please retry"}
+            };
+        }
+
+        return {
+            message: "snapshot recorded",
+            lines
+        };
     }
 }
