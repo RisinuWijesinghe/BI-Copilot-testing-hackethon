@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "room_and_availability_finder"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Room and availability finder"
+
+[build-options]
+sticky = true
