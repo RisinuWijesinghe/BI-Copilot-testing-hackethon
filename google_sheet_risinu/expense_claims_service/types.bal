@@ -19,3 +19,17 @@ public type ClaimConfirmation record {|
 public type ValidationErrorDetail record {|
     string message;
 |};
+
+# Spend summary across all categories for the current month.
+public type ClaimsSummary record {|
+    map<decimal> totalsByCategory;
+    decimal overallTotal;
+    int skippedRowCount;
+|};
+
+# Spend summary for a single category for the current month.
+public type CategorySummary record {|
+    string category;
+    decimal total;
+    int skippedRowCount;
+|};
