@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "outbound_notification_service"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Outbound notification service"
+
+[build-options]
+sticky = true
