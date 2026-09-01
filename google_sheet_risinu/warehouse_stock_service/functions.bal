@@ -141,3 +141,40 @@ function validateMovementQuantity(decimal quantityChange) returns ValidationErro
     }
     return ();
 }
+
+# Finds SKUs that appear more than once in a bulk movement request (case-insensitive), so the
+# whole request can be rejected outright rather than applying some lines against the same row
+# more than once.
+#
+# + movements - the requested movement lines
+# + return - the set of duplicated SKUs (as originally submitted), empty if none are duplicated
+function findDuplicateSkus(SkuMovement[] movements) returns string[] {
+    map<int> occurrenceCounts = {};
+    string[] duplicates = [];
+
+    foreach SkuMovement movement in movements {
+        string normalizedSku = movement.sku.trim().toLowerAscii();
+        int currentCount = occurrenceCounts[normalizedSku] ?: 0;
+        occurrenceCounts[normalizedSku] = currentCount + 1;
+        if currentCount == 1 {
+            // Second time we see this SKU: record it once, keyed by its first-seen original casing.
+            duplicates.push(movement.sku);
+        }
+    }
+
+    return duplicates;
+}
+
+# Validates that a SKU is eligible to be retired: it must currently have no stock on hand.
+#
+# + locatedRow - the row located for the SKU being retired
+# + return - `()` when the SKU can be retired, otherwise a `StockRemainingDetail` describing why not
+function validateRetireEligibility(LocatedStockRow locatedRow) returns StockRemainingDetail? {
+    if locatedRow.quantityOnHand > 0d {
+        return {
+            message: "sku cannot be retired while stock remains on hand",
+            quantityOnHand: locatedRow.quantityOnHand
+        };
+    }
+    return ();
+}
