@@ -1,3 +1,3 @@
 [workspace]
 title = "Gmail-Risinu"
-packages = ["outbound_notification_service"]
+packages = ["outbound_notification_service", "inbox_triage_and_filing"]

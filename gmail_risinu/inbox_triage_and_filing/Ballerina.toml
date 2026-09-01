@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "inbox_triage_and_filing"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Inbox triage and filing"
+
+[build-options]
+sticky = true
