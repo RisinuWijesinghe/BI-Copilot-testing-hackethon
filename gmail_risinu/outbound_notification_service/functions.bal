@@ -1,7 +1,7 @@
 import ballerina/file;
 import ballerina/lang.regexp;
 
-final regexp:RegExp EMAIL_PATTERN = re XBACKTICKX^[^@\s]+@[^@\s]+\.[^@\s]+ZXBACKTICKX; // end of email pattern
+final regexp:RegExp EMAIL_PATTERN = re `^[^@\s]+@[^@\s]+\.[^@\s]+$`;
 
 // Checks that a caller-supplied file name is a plain name with no directory
 // separators or parent-directory references, preventing path traversal outside
@@ -10,7 +10,7 @@ function isSafeFileName(string fileName) returns boolean {
     if fileName.trim().length() == 0 {
         return false;
     }
-    if fileName.includes("/") || fileName.includes("\") {
+    if fileName.includes("/") || fileName.includes("\\") {
         return false;
     }
     if fileName == "." || fileName == ".." {
