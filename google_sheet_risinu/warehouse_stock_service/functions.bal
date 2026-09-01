@@ -84,16 +84,20 @@ function toDecimal(int|string|decimal cellValue) returns decimal? {
     return ();
 }
 
-# Searches the given rows for the one matching the requested SKU (case-insensitive) and, when
-# found, maps it into a `StockLevel`.
+# Searches the given rows for the one matching the requested SKU (case-insensitive), keeping
+# track of its absolute row position in the sheet so a caller can write an update back to it.
+# This is the single lookup used both to read stock levels and to locate the row for a movement.
 #
 # + rowsValues - the raw data rows read from the sheet, excluding the header row
 # + sku - the SKU to locate
-# + return - the matching stock level, or `()` if no row matches the SKU
-function findStockLevel((int|string|decimal)[][] rowsValues, string sku) returns StockLevel? {
+# + headerRowCount - the number of header rows preceding `rowsValues` in the sheet
+# + return - the matching row, or `()` if no row matches the SKU
+function locateStockRow((int|string|decimal)[][] rowsValues, string sku, int headerRowCount) returns LocatedStockRow? {
     string normalizedSku = sku.trim().toLowerAscii();
 
+    int rowOffset = 0;
     foreach (int|string|decimal)[] rowValues in rowsValues {
+        rowOffset += 1;
         SheetRowEntry? entry = parseSheetRow(rowValues);
         if entry is () {
             continue;
@@ -103,15 +107,37 @@ function findStockLevel((int|string|decimal)[][] rowsValues, string sku) returns
             continue;
         }
 
-        boolean lowStock = entry.quantityOnHand <= entry.reorderThreshold;
         return {
             sku: entry.sku,
             productName: entry.productName,
             quantityOnHand: entry.quantityOnHand,
             reorderThreshold: entry.reorderThreshold,
-            lowStock
+            rowPosition: headerRowCount + rowOffset
         };
     }
 
+    return ();
+}
+
+# Maps a located stock row into the public `StockLevel` representation.
+#
+# + locatedRow - the row located via `locateStockRow`
+# + return - the stock level for the row
+function mapToStockLevel(LocatedStockRow locatedRow) returns StockLevel => {
+    sku: locatedRow.sku,
+    productName: locatedRow.productName,
+    quantityOnHand: locatedRow.quantityOnHand,
+    reorderThreshold: locatedRow.reorderThreshold,
+    lowStock: locatedRow.quantityOnHand <= locatedRow.reorderThreshold
+};
+
+# Validates an incoming stock movement quantity before any sheet access is attempted.
+#
+# + quantityChange - the movement quantity submitted by the caller
+# + return - `()` when the quantity is valid, otherwise a `ValidationErrorDetail` describing the problem
+function validateMovementQuantity(decimal quantityChange) returns ValidationErrorDetail? {
+    if quantityChange == 0d {
+        return {message: "quantityChange must not be zero"};
+    }
     return ();
 }
