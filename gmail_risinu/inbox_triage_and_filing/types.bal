@@ -50,3 +50,44 @@ type FilingSetupFailure record {|
     string message;
     Category category;
 |};
+
+// Result of moving a category's messages to the bin: the identifier to use to
+// undo exactly this cleanup, the category cleaned, and the messages moved.
+type CleanupResult record {|
+    string cleanupId;
+    Category category;
+    string[] messageIds;
+|};
+
+// Result of restoring exactly the messages moved by a single cleanup.
+type UndoResult record {|
+    string cleanupId;
+    Category category;
+    string[] messageIds;
+|};
+
+// Record of a single cleanup batch, kept so its undo can restore exactly the
+// messages that batch moved to the bin, not everything sitting in the bin.
+type CleanupBatch record {|
+    string cleanupId;
+    Category category;
+    string[] messageIds;
+|};
+
+// Current backlog count for one category folder.
+type CategoryBacklog record {|
+    Category category;
+    int count;
+|};
+
+// Reported when a cleanup is requested for a category whose folder does not
+// currently exist in the mailbox.
+type CategoryNotFound record {|
+    Category category;
+|};
+
+// Reported when an undo is requested for a cleanup identifier that does not
+// correspond to any recorded cleanup batch (never happened, or already undone).
+type CleanupNotFound record {|
+    string cleanupId;
+|};

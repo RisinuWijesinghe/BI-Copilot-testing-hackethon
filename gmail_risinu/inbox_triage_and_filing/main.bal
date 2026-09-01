@@ -41,4 +41,56 @@ service /triage on new http:Listener(servicePort) {
         }
         return result;
     }
+
+    # Moves every message currently filed under a category to the bin. The set of
+    # messages moved is recorded against the returned cleanup identifier so it can
+    # be undone precisely later.
+    #
+    # + category - the category to clean up
+    # + return - the cleanup identifier and the messages moved (empty when the category
+    # had nothing filed), not found when the category's folder does not exist, or a
+    # generic failure when the mailbox could not be reached or the credentials were rejected
+    resource function post categories/[Category category]/cleanup() returns CleanupResult|http:NotFound|http:InternalServerError {
+        CleanupResult|CategoryNotFound|error result = cleanupCategory(category);
+        if result is CategoryNotFound {
+            return <http:NotFound>{body: {message: string `no folder found for category '${category}'`}};
+        }
+        if result is error {
+            log:printError("category cleanup failed", result);
+            return <http:InternalServerError>{body: {message: "triage is unavailable"}};
+        }
+        return result;
+    }
+
+    # Restores exactly the messages moved to the bin by a single earlier cleanup.
+    #
+    # + cleanupId - the cleanup identifier returned when that cleanup was performed
+    # + return - the restored messages, not found when the identifier does not match any
+    # recorded cleanup (never happened, or already undone), or a generic failure when the
+    # mailbox could not be reached or the credentials were rejected
+    resource function post cleanups/[string cleanupId]/undo() returns UndoResult|http:NotFound|http:InternalServerError {
+        UndoResult|CleanupNotFound|error result = undoCleanup(cleanupId);
+        if result is CleanupNotFound {
+            return <http:NotFound>{body: {message: "no cleanup found for the given identifier"}};
+        }
+        if result is error {
+            log:printError("cleanup undo failed", result);
+            return <http:InternalServerError>{body: {message: "triage is unavailable"}};
+        }
+        return result;
+    }
+
+    # Reports the current backlog count for each of the four category folders,
+    # without running a sweep.
+    #
+    # + return - the current count for each category, or a generic failure when the
+    # mailbox could not be reached or the credentials were rejected
+    resource function get backlog() returns CategoryBacklog[]|http:InternalServerError {
+        CategoryBacklog[]|error result = currentBacklog();
+        if result is error {
+            log:printError("backlog count failed", result);
+            return <http:InternalServerError>{body: {message: "triage is unavailable"}};
+        }
+        return result;
+    }
 }

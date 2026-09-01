@@ -1,3 +1,4 @@
+import ballerina/uuid;
 import ballerinax/googleapis.gmail;
 
 // The four category folders, in the fixed order that categories are evaluated in:
@@ -254,4 +255,121 @@ function sweepAndFileUnreadMessages() returns FilingSweepResult|FilingSetupFailu
     }
 
     return {filed: filedMessages};
+}
+
+// Looks up the configured Gmail label name for a category folder.
+function labelNameForCategory(Category category) returns string {
+    foreach CategoryFolder folder in CATEGORY_FOLDERS {
+        if folder.category == category {
+            return folder.labelName;
+        }
+    }
+    // Unreachable: CATEGORY_FOLDERS always has an entry for every Category member.
+    panic error("no folder configured for category");
+}
+
+// Finds the Gmail label id for a category's folder, or () when that category's
+// folder does not currently exist in the mailbox.
+function findCategoryLabelId(Category category) returns string?|error {
+    map<gmail:Label>|error existingLabels = fetchLabelsByName();
+    if existingLabels is error {
+        return error("triage is unavailable");
+    }
+    string labelName = labelNameForCategory(category);
+    gmail:Label? label = existingLabels[labelName.toLowerAscii()];
+    if label is () {
+        return ();
+    }
+    return label.id;
+}
+
+// Moves every message currently filed under a category to the bin (Gmail trash)
+// and records exactly which messages this cleanup moved, so it can be undone
+// precisely later. Fails with a generic error when the category's folder does not
+// exist, or when the mailbox cannot be reached.
+function cleanupCategory(Category category) returns CleanupResult|CategoryNotFound|error {
+    string?|error labelId = findCategoryLabelId(category);
+    if labelId is error {
+        return labelId;
+    }
+    if labelId is () {
+        return <CategoryNotFound>{category};
+    }
+
+    string labelName = labelNameForCategory(category);
+    gmail:ListMessagesResponse|error listResult = gmailClient->/users/me/messages(q = string `label:${labelName} -in:trash`);
+    if listResult is error {
+        return error("triage is unavailable");
+    }
+
+    gmail:Message[]? messageRefs = listResult.messages;
+    if messageRefs is () {
+        CleanupResult emptyResult = {cleanupId: uuid:createType4AsString(), category, messageIds: []};
+        storeCleanupBatch({cleanupId: emptyResult.cleanupId, category, messageIds: []});
+        return emptyResult;
+    }
+
+    string[] movedMessageIds = [];
+    foreach gmail:Message messageRef in messageRefs {
+        gmail:Message|error trashResult = gmailClient->/users/me/messages/[messageRef.id]/trash.post();
+        if trashResult is error {
+            return error("triage is unavailable");
+        }
+        movedMessageIds.push(messageRef.id);
+    }
+
+    string cleanupId = uuid:createType4AsString();
+    CleanupBatch batch = {cleanupId, category, messageIds: movedMessageIds};
+    storeCleanupBatch(batch);
+
+    return {cleanupId, category, messageIds: movedMessageIds};
+}
+
+// Restores exactly the messages moved to the bin by a single earlier cleanup,
+// identified by its cleanup identifier. Once undone, the batch is forgotten so
+// undoing the same cleanup again is reported as not found.
+function undoCleanup(string cleanupId) returns UndoResult|CleanupNotFound|error {
+    CleanupBatch? batch = getCleanupBatch(cleanupId);
+    if batch is () {
+        return <CleanupNotFound>{cleanupId};
+    }
+
+    foreach string messageId in batch.messageIds {
+        gmail:Message|error untrashResult = gmailClient->/users/me/messages/[messageId]/untrash.post();
+        if untrashResult is error {
+            return error("triage is unavailable");
+        }
+    }
+
+    removeCleanupBatch(cleanupId);
+    return {cleanupId: batch.cleanupId, category: batch.category, messageIds: batch.messageIds};
+}
+
+// Counts how many messages currently sit in each of the four category folders,
+// excluding anything already moved to the bin. A category whose folder does not
+// yet exist is reported with a count of zero.
+function currentBacklog() returns CategoryBacklog[]|error {
+    map<gmail:Label>|error existingLabels = fetchLabelsByName();
+    if existingLabels is error {
+        return error("triage is unavailable");
+    }
+
+    CategoryBacklog[] backlog = [];
+    foreach CategoryFolder folder in CATEGORY_FOLDERS {
+        gmail:Label? label = existingLabels[folder.labelName.toLowerAscii()];
+        if label is () {
+            backlog.push({category: folder.category, count: 0});
+            continue;
+        }
+
+        gmail:ListMessagesResponse|error listResult = gmailClient->/users/me/messages(q = string `label:${folder.labelName} -in:trash`);
+        if listResult is error {
+            return error("triage is unavailable");
+        }
+        gmail:Message[]? messageRefs = listResult.messages;
+        int count = messageRefs is gmail:Message[] ? messageRefs.length() : 0;
+        backlog.push({category: folder.category, count});
+    }
+
+    return backlog;
 }
