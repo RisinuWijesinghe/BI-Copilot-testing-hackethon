@@ -1,3 +1,3 @@
 [workspace]
 title = "Google Sheet-Risinu"
-packages = ["expense_claims_service"]
+packages = ["expense_claims_service", "warehouse_stock_service"]

@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "warehouse_stock_service"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Warehouse stock service"
+
+[build-options]
+sticky = true

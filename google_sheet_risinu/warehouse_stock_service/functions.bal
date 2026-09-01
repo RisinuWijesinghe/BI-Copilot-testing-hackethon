@@ -1,0 +1,117 @@
+import ballerina/lang.regexp;
+
+// A SKU must be a short alphanumeric code (letters, digits, hyphens, underscores). This keeps
+// obviously malformed input from ever reaching the sheet.
+final regexp:RegExp skuPattern = re `^[A-Za-z0-9_-]{1,64}$`;
+
+# Validates an incoming SKU before any sheet access is attempted.
+#
+# + sku - the SKU submitted by the caller
+# + return - `()` when the SKU is well-formed, otherwise a `ValidationErrorDetail` describing the problem
+function validateSku(string sku) returns ValidationErrorDetail? {
+    string trimmedSku = sku.trim();
+    if trimmedSku.length() == 0 {
+        return {message: "sku is required"};
+    }
+
+    if !skuPattern.isFullMatch(trimmedSku) {
+        return {message: "sku is malformed: only letters, digits, hyphens and underscores are allowed"};
+    }
+
+    return ();
+}
+
+# Parses a raw row of sheet values into a `SheetRowEntry`.
+# A row is considered unreadable (and should be skipped) if it does not have a SKU (column A),
+# a product name (column B), a numeric quantity on hand (column C) and a numeric reorder
+# threshold (column D).
+#
+# + rowValues - the raw values of a single row, as returned by the Sheets API
+# + return - the parsed row entry, or `()` if the row is blank/malformed and must be skipped
+function parseSheetRow((int|string|decimal)[] rowValues) returns SheetRowEntry? {
+    // Expected column order: sku(0), productName(1), quantityOnHand(2), reorderThreshold(3).
+    if rowValues.length() < 4 {
+        return ();
+    }
+
+    int|string|decimal skuValue = rowValues[0];
+    if !(skuValue is string) {
+        return ();
+    }
+    string sku = skuValue.trim();
+    if sku.length() == 0 {
+        return ();
+    }
+
+    int|string|decimal productNameValue = rowValues[1];
+    if !(productNameValue is string) {
+        return ();
+    }
+    string productName = productNameValue.trim();
+    if productName.length() == 0 {
+        return ();
+    }
+
+    decimal? quantityOnHand = toDecimal(rowValues[2]);
+    if quantityOnHand is () {
+        return ();
+    }
+
+    decimal? reorderThreshold = toDecimal(rowValues[3]);
+    if reorderThreshold is () {
+        return ();
+    }
+
+    return {sku, productName, quantityOnHand, reorderThreshold};
+}
+
+# Converts a raw sheet cell value into a `decimal`, if possible.
+#
+# + cellValue - the raw cell value
+# + return - the parsed decimal, or `()` if the value is not numeric
+function toDecimal(int|string|decimal cellValue) returns decimal? {
+    if cellValue is decimal {
+        return cellValue;
+    }
+    if cellValue is int {
+        return <decimal>cellValue;
+    }
+    string trimmedValue = cellValue.trim();
+    decimal|error parsedValue = decimal:fromString(trimmedValue);
+    if parsedValue is decimal {
+        return parsedValue;
+    }
+    return ();
+}
+
+# Searches the given rows for the one matching the requested SKU (case-insensitive) and, when
+# found, maps it into a `StockLevel`.
+#
+# + rowsValues - the raw data rows read from the sheet, excluding the header row
+# + sku - the SKU to locate
+# + return - the matching stock level, or `()` if no row matches the SKU
+function findStockLevel((int|string|decimal)[][] rowsValues, string sku) returns StockLevel? {
+    string normalizedSku = sku.trim().toLowerAscii();
+
+    foreach (int|string|decimal)[] rowValues in rowsValues {
+        SheetRowEntry? entry = parseSheetRow(rowValues);
+        if entry is () {
+            continue;
+        }
+
+        if entry.sku.toLowerAscii() != normalizedSku {
+            continue;
+        }
+
+        boolean lowStock = entry.quantityOnHand <= entry.reorderThreshold;
+        return {
+            sku: entry.sku,
+            productName: entry.productName,
+            quantityOnHand: entry.quantityOnHand,
+            reorderThreshold: entry.reorderThreshold,
+            lowStock
+        };
+    }
+
+    return ();
+}
