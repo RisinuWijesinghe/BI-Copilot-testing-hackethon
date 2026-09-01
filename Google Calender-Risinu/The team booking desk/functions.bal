@@ -1,11 +1,17 @@
+import ballerina/http;
 import ballerina/log;
 import ballerina/time;
+import ballerinax/googleapis.calendar;
 
 // Generic, caller-safe error used for any failure originating from Google Calendar
 // (rejected, throttled, unreachable, etc). The real cause is logged, never returned.
 public type UpstreamFailureError distinct error;
 
 const string UPSTREAM_FAILURE_MESSAGE = "The calendar service is currently unavailable. Please try again later.";
+
+// Maximum agenda entries returned for a single request, so nobody can ask for a
+// decade of events in one go.
+public const int MAX_AGENDA_RESULTS = 200;
 
 // Validates that the end time is after the start time and that the meeting does not
 // start in the past. Returns a plain-English message describing the first violation found.
@@ -36,3 +42,47 @@ function toUpstreamFailure(error cause, string operation) returns UpstreamFailur
     log:printError(string `Google Calendar operation failed: ${operation}`, 'error = cause);
     return error UpstreamFailureError(UPSTREAM_FAILURE_MESSAGE);
 }
+
+// Determines whether a Google Calendar failure was caused by a missing/inaccessible
+// calendar or event (HTTP 404), by walking the error's cause chain.
+function isNotFoundFailure(error cause) returns boolean {
+    error? current = cause;
+    while current is error {
+        if current is http:ClientRequestError {
+            int statusCode = current.detail().statusCode;
+            if statusCode == 404 {
+                return true;
+            }
+        }
+        current = current.cause();
+    }
+    return false;
+}
+
+// Extracts the display value (date-time, falling back to date) from a Google Calendar `Time`.
+function toTimeValue(calendar:Time eventTime) returns string {
+    string? dateTime = eventTime.dateTime;
+    if dateTime is string {
+        return dateTime;
+    }
+    string? date = eventTime.date;
+    return date ?: "";
+}
+
+// Extracts attendee email addresses from a Google Calendar event's attendee list.
+function toAttendeeEmails(calendar:Attendee[]? attendees) returns string[] {
+    if attendees is () {
+        return [];
+    }
+    return from calendar:Attendee attendee in attendees
+        select attendee.email;
+}
+
+// Maps a Google Calendar `Event` occurrence to the UI-facing `AgendaItem` shape.
+function toAgendaItem(calendar:Event event) returns AgendaItem => {
+    title: event.summary ?: "",
+    startTime: toTimeValue(event.'start ?: {}),
+    endTime: toTimeValue(event.end ?: {}),
+    location: event.location ?: "",
+    attendees: toAttendeeEmails(event.attendees)
+};

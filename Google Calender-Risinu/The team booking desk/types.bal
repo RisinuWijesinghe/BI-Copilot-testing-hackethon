@@ -28,3 +28,19 @@ public type BookMeetingResponse record {|
 public type ErrorDetails record {|
     string message;
 |};
+
+// A single occurrence on a calendar's agenda, carrying only what a UI needs to render it.
+public type AgendaItem record {|
+    string title;
+    string startTime;
+    string endTime;
+    string location;
+    string[] attendees;
+|};
+
+// Request payload for rescheduling an existing meeting to new start and end times.
+public type RescheduleMeetingRequest record {|
+    string startTime;
+    string endTime;
+    string timeZone;
+|};
