@@ -117,8 +117,9 @@ function isExternalRecipient(string recipient) returns boolean {
         return true;
     }
     string domain = recipient.substring(atIndex + 1).toLowerAscii();
-    foreach string internalDomain in internalEmailDomains {
-        if domain == internalDomain.toLowerAscii() {
+    string[] internalDomains = re `,`.split(internalEmailDomains);
+    foreach string internalDomain in internalDomains {
+        if domain == internalDomain.trim().toLowerAscii() {
             return false;
         }
     }

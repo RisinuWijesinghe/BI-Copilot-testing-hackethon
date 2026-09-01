@@ -71,3 +71,20 @@ type ParkedNotificationDetail record {|
 type ApprovalResult record {|
     string notificationId;
 |};
+
+// Request payload for revising a parked notification. Replaces the recipients,
+// subject and body while keeping the same notification identifier.
+type EmailNotificationRevision record {|
+    string[] to;
+    string subject;
+    string htmlBody;
+    AttachmentReference[] attachments = [];
+    InlineImageReference[] inlineImages = [];
+|};
+
+// Counts of notifications tracked by the service since startup.
+type NotificationStats record {|
+    int parkedCount;
+    int sentCount;
+    int discardedCount;
+|};

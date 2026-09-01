@@ -12,7 +12,7 @@ configurable string attachmentBaseDirectory = ?;
 // Maximum allowed size, in bytes, for any single attached or inline file.
 configurable int maxAttachmentSizeBytes = 10485760;
 
-// Email domains considered internal to the company. A notification with at least
-// one recipient outside these domains is parked for review instead of being sent
-// immediately.
-configurable string[] internalEmailDomains = ?;
+// Email domains considered internal to the company, as a comma-separated list
+// (e.g. "example.com,example.org"). A notification with at least one recipient
+// outside these domains is parked for review instead of being sent immediately.
+configurable string internalEmailDomains = ?;

@@ -82,6 +82,7 @@ service /notifications on new http:Listener(servicePort) {
 
         notification.status = "SENT";
         storeNotification(notification);
+        markSent();
         return {notificationId, status: "SENT"};
     }
 
@@ -139,7 +140,97 @@ service /notifications on new http:Listener(servicePort) {
 
         notification.status = "SENT";
         storeNotification(notification);
+        markSent();
         return {notificationId: notification.notificationId};
+    }
+
+    # Revises a parked notification's recipients, subject or body ahead of approval.
+    # The notification identifier is preserved so callers tracking it do not lose it.
+    #
+    # + notificationId - the identifier of the parked notification to revise
+    # + revision - the replacement recipients, subject, HTML body, and optional attachments/inline images
+    # + return - the updated parked notification detail, not found when it does not exist or is not parked,
+    # or a bad request when the revised payload or a referenced file is invalid
+    resource function put parked/[string notificationId](EmailNotificationRevision revision) returns ParkedNotificationDetail|http:NotFound|http:BadRequest {
+        StoredNotification? existingNotification = getNotification(notificationId);
+        if existingNotification is () || existingNotification.status != "PARKED" {
+            return <http:NotFound>{body: {message: "no parked notification found for the given identifier"}};
+        }
+
+        string? recipientsError = validateRecipients(revision.to);
+        if recipientsError is string {
+            return <http:BadRequest>{body: {message: recipientsError}};
+        }
+
+        string? subjectError = validateSubject(revision.subject);
+        if subjectError is string {
+            return <http:BadRequest>{body: {message: subjectError}};
+        }
+
+        string? htmlBodyError = validateHtmlBody(revision.htmlBody);
+        if htmlBodyError is string {
+            return <http:BadRequest>{body: {message: htmlBodyError}};
+        }
+
+        foreach AttachmentReference attachment in revision.attachments {
+            string? attachmentError = validateAttachmentFile("attachments", attachment.fileName);
+            if attachmentError is string {
+                return <http:BadRequest>{body: {message: attachmentError}};
+            }
+        }
+
+        foreach InlineImageReference inlineImage in revision.inlineImages {
+            string? inlineImageError = validateAttachmentFile("inlineImages", inlineImage.fileName);
+            if inlineImageError is string {
+                return <http:BadRequest>{body: {message: inlineImageError}};
+            }
+        }
+
+        StoredNotification revisedNotification = {
+            notificationId,
+            to: revision.to,
+            subject: revision.subject,
+            htmlBody: revision.htmlBody,
+            attachments: revision.attachments,
+            inlineImages: revision.inlineImages,
+            status: "PARKED",
+            createdAt: existingNotification.createdAt
+        };
+        storeNotification(revisedNotification);
+
+        return {
+            notificationId: revisedNotification.notificationId,
+            to: revisedNotification.to,
+            subject: revisedNotification.subject,
+            htmlBody: revisedNotification.htmlBody,
+            attachments: revisedNotification.attachments,
+            inlineImages: revisedNotification.inlineImages,
+            createdAt: revisedNotification.createdAt
+        };
+    }
+
+    # Discards a parked notification. The notification is removed entirely rather
+    # than being hidden or marked in any way.
+    #
+    # + notificationId - the identifier of the parked notification to discard
+    # + return - no content on success, or not found when it does not exist or is not parked
+    resource function delete parked/[string notificationId]() returns http:NoContent|http:NotFound {
+        StoredNotification? existingNotification = getNotification(notificationId);
+        if existingNotification is () || existingNotification.status != "PARKED" {
+            return <http:NotFound>{body: {message: "no parked notification found for the given identifier"}};
+        }
+
+        removeNotification(notificationId);
+        markDiscarded();
+        return http:NO_CONTENT;
+    }
+
+    # Reports how many notifications are currently parked, how many have been sent,
+    # and how many have been discarded since startup.
+    #
+    # + return - the current notification counts
+    resource function get stats() returns NotificationStats {
+        return currentStats();
     }
 }
 
