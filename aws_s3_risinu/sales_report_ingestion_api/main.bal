@@ -36,4 +36,14 @@ service /reports on new http:Listener(servicePort) {
     resource function get [string reportDate]/summary() returns ReportSummaryResponse|http:NotFound|http:PayloadTooLarge|http:InternalServerError {
         return handleGetReportSummary(reportDate);
     }
+
+    # Archives a report by moving it into a dated archive area and removing it from the incoming area.
+    # Safe to call more than once for the same date.
+    #
+    # + reportDate - the report date, e.g. 2026-09-01
+    # + return - the archive outcome (including whether it was already archived), a not found if the report
+    # was never uploaded, or a generic server error if the storage layer fails
+    resource function post [string reportDate]/archive() returns ArchiveResponse|http:NotFound|http:InternalServerError {
+        return handleArchiveReport(reportDate);
+    }
 }

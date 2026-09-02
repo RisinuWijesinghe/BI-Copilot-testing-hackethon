@@ -6,6 +6,7 @@ const string GENERIC_STORAGE_ERROR_MESSAGE = "The report storage service is curr
 const string INVALID_PAYLOAD_MESSAGE = "The uploaded report could not be read as CSV text.";
 const string REPORT_TOO_LARGE_MESSAGE = "The report is too large to process.";
 const string PROCESSED_KEY_PREFIX = "processed/";
+const string ARCHIVE_KEY_PREFIX = "archive/";
 
 # Builds the S3 object key for a given report date.
 #
@@ -18,6 +19,12 @@ function buildReportObjectKey(string reportDate) returns string => string `${rep
 # + reportDate - the report date, e.g. 2026-09-01
 # + return - the corresponding processed-area S3 object key
 function buildProcessedObjectKey(string reportDate) returns string => PROCESSED_KEY_PREFIX + buildReportObjectKey(reportDate);
+
+# Builds the S3 object key for the archived copy of a given report date.
+#
+# + reportDate - the report date, e.g. 2026-09-01
+# + return - the corresponding archive-area S3 object key
+function buildArchiveObjectKey(string reportDate) returns string => ARCHIVE_KEY_PREFIX + buildReportObjectKey(reportDate);
 
 # Handles uploading a CSV report for the given date.
 #
@@ -166,4 +173,51 @@ function handleGetReportSummary(string reportDate) returns ReportSummaryResponse
     }
 
     return summary;
+}
+
+# Handles archiving a report: moves it into a dated archive area and removes it from the incoming area,
+# so the same report cannot be processed twice. Safe to call more than once for the same date.
+#
+# On the second and subsequent calls for an already-archived report, this reports that fact rather than
+# failing. If the copy to the archive succeeds but the cleanup of the original fails, the caller is never
+# told the archive succeeded, and the original is only ever removed once a copy is confirmed to exist.
+#
+# + reportDate - the report date
+# + return - the archive outcome, a not found, or a generic server error
+function handleArchiveReport(string reportDate) returns ArchiveResponse|http:NotFound|http:InternalServerError {
+    string archiveObjectKey = buildArchiveObjectKey(reportDate);
+
+    boolean|s3:Error archiveExistsResult = s3Client->doesObjectExist(bucketName, archiveObjectKey);
+    if archiveExistsResult is s3:Error {
+        log:printError("Failed to check archive existence in S3", 'error = archiveExistsResult, objectKey = archiveObjectKey);
+        return <http:InternalServerError>{body: {message: GENERIC_STORAGE_ERROR_MESSAGE}};
+    }
+    if archiveExistsResult {
+        return {date: reportDate, alreadyArchived: true};
+    }
+
+    string objectKey = buildReportObjectKey(reportDate);
+    boolean|s3:Error existsResult = s3Client->doesObjectExist(bucketName, objectKey);
+    if existsResult is s3:Error {
+        log:printError("Failed to check report existence in S3", 'error = existsResult, objectKey = objectKey);
+        return <http:InternalServerError>{body: {message: GENERIC_STORAGE_ERROR_MESSAGE}};
+    }
+    if !existsResult {
+        return <http:NotFound>{body: {message: string `No report found for date ${reportDate}.`}};
+    }
+
+    s3:Error? copyResult = s3Client->copyObject(bucketName, objectKey, bucketName, archiveObjectKey);
+    if copyResult is s3:Error {
+        log:printError("Failed to copy report to archive in S3", 'error = copyResult, objectKey = objectKey);
+        return <http:InternalServerError>{body: {message: GENERIC_STORAGE_ERROR_MESSAGE}};
+    }
+
+    s3:Error? deleteResult = s3Client->deleteObject(bucketName, objectKey);
+    if deleteResult is s3:Error {
+        log:printError("Report was copied to the archive but removing the original failed; a copy still " +
+                "exists in the archive area and the original remains in place", 'error = deleteResult, objectKey = objectKey);
+        return <http:InternalServerError>{body: {message: GENERIC_STORAGE_ERROR_MESSAGE}};
+    }
+
+    return {date: reportDate, alreadyArchived: false};
 }

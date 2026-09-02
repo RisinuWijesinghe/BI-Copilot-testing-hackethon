@@ -36,6 +36,12 @@ public type ReportSummaryResponse record {|
     int skippedRowCount;
 |};
 
+# Response payload returned when archiving a report.
+public type ArchiveResponse record {|
+    string date;
+    boolean alreadyArchived;
+|};
+
 # A generic, customer-safe error payload. Never includes AWS error codes, bucket names, or key material.
 public type ErrorPayload record {|
     string message;
