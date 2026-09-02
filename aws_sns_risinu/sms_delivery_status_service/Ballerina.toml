@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "sms_delivery_status_service"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "SMS delivery status service"
+
+[build-options]
+sticky = true
