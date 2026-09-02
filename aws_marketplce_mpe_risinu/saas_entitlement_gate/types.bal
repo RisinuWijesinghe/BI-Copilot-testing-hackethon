@@ -19,6 +19,14 @@ public type ErrorDetail record {|
     string timestamp;
 |};
 
+# Verdict for whether a customer may consume a requested amount of a dimension right now.
+public type SeatCheckResult record {|
+    # True if the customer holds an unexpired entitlement covering the requested amount.
+    boolean allowed;
+    # Short, human-readable explanation of the verdict.
+    string reason;
+|};
+
 # Builds a standard error body with the current time.
 #
 # + message - the safe, non-sensitive message to surface to the caller

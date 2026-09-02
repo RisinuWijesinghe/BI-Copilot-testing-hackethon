@@ -14,3 +14,7 @@ configurable string productCode = ?;
 
 # Port on which the entitlement gate HTTP service listens.
 configurable int servicePort = 8080;
+
+# How long, in seconds, a customer's fetched entitlements may be reused before AWS is queried
+# again. Keeps the seat-check endpoint fast under heavy per-action call volume.
+configurable decimal cacheTtlSeconds = 30;
