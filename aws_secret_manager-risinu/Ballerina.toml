@@ -1,0 +1,3 @@
+[workspace]
+title = "AWS Secret Manager-Risinu"
+packages = ["multi_secret_config_loader_with_swappable_auth"]

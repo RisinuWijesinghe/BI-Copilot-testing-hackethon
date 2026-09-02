@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "multi_secret_config_loader_with_swappable_auth"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Multi-secret config loader with swappable auth"
+
+[build-options]
+sticky = true
