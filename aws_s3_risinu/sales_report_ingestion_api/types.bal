@@ -21,6 +21,21 @@ public type ReportContentResponse record {|
     SalesReportRow[] rows;
 |};
 
+# A single validated sales row used to compute the daily summary.
+public type ValidSalesRow record {|
+    string product;
+    decimal revenue;
+|};
+
+# Response payload returned when fetching the daily summary for a report.
+public type ReportSummaryResponse record {|
+    string date;
+    int rowCount;
+    decimal totalRevenue;
+    string bestSellingProduct;
+    int skippedRowCount;
+|};
+
 # A generic, customer-safe error payload. Never includes AWS error codes, bucket names, or key material.
 public type ErrorPayload record {|
     string message;

@@ -6,3 +6,4 @@ configurable string accessKeyId = ?;
 configurable string secretAccessKey = ?;
 
 configurable int servicePort = 8080;
+configurable int maxReportSizeInBytes = 52428800;

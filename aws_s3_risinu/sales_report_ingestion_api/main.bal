@@ -27,4 +27,13 @@ service /reports on new http:Listener(servicePort) {
     resource function get [string reportDate]() returns ReportContentResponse|http:NotFound|http:InternalServerError {
         return handleGetReport(reportDate);
     }
+
+    # Computes the daily summary for a report and writes a cleaned-up copy to the processed area.
+    #
+    # + reportDate - the report date, e.g. 2026-09-01
+    # + return - the report summary, a not found if the report does not exist, a payload too large
+    # if the report exceeds the configured size limit, or a generic server error if the storage layer fails
+    resource function get [string reportDate]/summary() returns ReportSummaryResponse|http:NotFound|http:PayloadTooLarge|http:InternalServerError {
+        return handleGetReportSummary(reportDate);
+    }
 }
