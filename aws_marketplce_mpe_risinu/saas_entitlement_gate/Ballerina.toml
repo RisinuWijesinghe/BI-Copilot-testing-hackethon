@@ -6,4 +6,4 @@ distribution = "2201.13.0"
 title = "SaaS entitlement gate"
 
 [build-options]
-sticky = true
+sticky = false
