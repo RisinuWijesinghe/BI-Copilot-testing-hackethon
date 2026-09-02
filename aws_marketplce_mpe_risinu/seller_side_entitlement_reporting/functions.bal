@@ -25,7 +25,7 @@ function sweepAllEntitlements(string productCode, string[] dimensions = []) retu
             if nextToken is string {
                 request.nextToken = nextToken;
             }
-            mpe:EntitlementsResponse response = check entitlementClient->getEntitlements(request = request);
+            mpe:EntitlementsResponse response = check fetchEntitlementsPage(request);
             allEntitlements.push(...response.entitlements);
 
             string? responseNextToken = response?.nextToken;
@@ -39,6 +39,31 @@ function sweepAllEntitlements(string productCode, string[] dimensions = []) retu
     }
 
     return allEntitlements;
+}
+
+# Fetches a single page of entitlements from AWS Marketplace. Kept as a thin, separately-named
+# wrapper around the connector call so tests can substitute it and drive pagination without a
+# real AWS account.
+#
+# + request - the entitlements request for this page
+# + return - the page response, or an error if the call failed
+function fetchEntitlementsPage(mpe:EntitlementsRequest request) returns mpe:EntitlementsResponse|error {
+    return entitlementClient->getEntitlements(request = request);
+}
+
+# Narrows a full entitlement snapshot down to the requested dimensions. An empty filter list
+# means no narrowing is applied.
+#
+# + entitlements - the complete set of entitlements from a product's snapshot
+# + dimensions - the dimensions to keep; empty means keep everything
+# + return - the entitlements belonging to one of the requested dimensions
+function filterByDimensions(mpe:Entitlement[] entitlements, string[] dimensions) returns mpe:Entitlement[] {
+    if dimensions.length() == 0 {
+        return entitlements;
+    }
+    return from mpe:Entitlement entitlement in entitlements
+        where dimensions.indexOf(entitlement?.dimension ?: "") is int
+        select entitlement;
 }
 
 # Validates that every requested dimension is one of the dimensions sold for these products.
@@ -58,8 +83,11 @@ function validateDimensions(string[] dimensions) returns error? {
 #
 # + productCode - the product code the entitlements belong to
 # + entitlements - the complete set of entitlements swept for the product
+# + lastRefreshed - timestamp of the background refresh the entitlements were taken from
+# + stale - whether the underlying snapshot is carried over from a failed refresh
 # + return - the aggregated entitlement summary
-function buildEntitlementSummary(string productCode, mpe:Entitlement[] entitlements) returns EntitlementSummary|error {
+function buildEntitlementSummary(string productCode, mpe:Entitlement[] entitlements, string lastRefreshed,
+        boolean stale) returns EntitlementSummary|error {
     map<string[]> dimensionToCustomers = {};
     map<decimal> dimensionToTotal = {};
 
@@ -95,7 +123,9 @@ function buildEntitlementSummary(string productCode, mpe:Entitlement[] entitleme
     return {
         productCode,
         totalEntitlements: entitlements.length(),
-        dimensions: dimensionSummaries
+        dimensions: dimensionSummaries,
+        lastRefreshed,
+        stale
     };
 }
 
@@ -128,9 +158,11 @@ function toEntitledAmount(boolean|float|int|string? entitlementValue) returns de
 # + productCode - the product code the entitlements belong to
 # + windowDays - number of days ahead to look for upcoming expiries
 # + entitlements - the complete set of entitlements swept for the product
+# + lastRefreshed - timestamp of the background refresh the entitlements were taken from
+# + stale - whether the underlying snapshot is carried over from a failed refresh
 # + return - the expiry watchlist, or an error if an expiry date could not be interpreted
-function buildExpiryWatchlist(string productCode, int windowDays, mpe:Entitlement[] entitlements)
-        returns ExpiryWatchlist|error {
+function buildExpiryWatchlist(string productCode, int windowDays, mpe:Entitlement[] entitlements,
+        string lastRefreshed, boolean stale) returns ExpiryWatchlist|error {
     time:Utc now = time:utcNow();
     time:Utc windowEnd = time:utcAddSeconds(now, <decimal>windowDays * 86400);
 
@@ -169,6 +201,33 @@ function buildExpiryWatchlist(string productCode, int windowDays, mpe:Entitlemen
         productCode,
         windowDays,
         expiringSoon: sortedExpiringSoon,
-        alreadyExpired: sortedAlreadyExpired
+        alreadyExpired: sortedAlreadyExpired,
+        lastRefreshed,
+        stale
     };
+}
+
+# Renders an expiry watchlist as CSV so ops can drop it straight into a spreadsheet. Already-expired
+# entitlements are listed after the still-live ones, with a status column distinguishing the two.
+#
+# + watchlist - the expiry watchlist to render
+# + return - the watchlist as a CSV document, including a header row
+function watchlistToCsv(ExpiryWatchlist watchlist) returns string {
+    string[] lines = ["customerIdentifier,dimension,amount,expiryDate,status"];
+    foreach ExpiringEntitlement entitlement in watchlist.expiringSoon {
+        lines.push(toCsvRow(entitlement, "EXPIRING_SOON"));
+    }
+    foreach ExpiringEntitlement entitlement in watchlist.alreadyExpired {
+        lines.push(toCsvRow(entitlement, "ALREADY_EXPIRED"));
+    }
+    return string:'join("\n", ...lines) + "\n";
+}
+
+# Renders a single watchlist entry as one CSV row.
+#
+# + entitlement - the entry to render
+# + status - the bucket the entry belongs to
+# + return - the CSV row, without a trailing newline
+function toCsvRow(ExpiringEntitlement entitlement, string status) returns string {
+    return string `${entitlement.customerIdentifier},${entitlement.dimension},${entitlement.amount},${entitlement.expiryDate},${status}`;
 }

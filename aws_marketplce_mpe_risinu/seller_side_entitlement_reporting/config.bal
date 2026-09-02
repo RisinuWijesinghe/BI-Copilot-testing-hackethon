@@ -18,5 +18,8 @@ configurable string[] supportedDimensions = ?;
 # Maximum number of entitlement records requested per page when sweeping AWS Marketplace.
 configurable int entitlementPageSize = 20;
 
+# How often, in seconds, the background job refreshes the entitlement snapshot for every configured product.
+configurable decimal refreshIntervalSeconds = 300;
+
 # Port on which the internal reporting HTTP service listens.
 configurable int servicePort = 8080;
