@@ -49,28 +49,21 @@ function buildUploadSummary(lambda:S3Event event) returns UploadSummary {
     return summary;
 }
 
-// Checks whether an incoming API Gateway proxy request looks well-formed.
+// Checks whether an incoming Lambda function URL request looks well-formed.
 // A malformed request is one that is missing the HTTP method or path
-// information that API Gateway is expected to always populate.
-function isMalformedRequest(lambda:APIGatewayProxyRequest request) returns boolean {
-    string httpMethod = request.httpMethod;
-    string path = request.path;
+// information that the function URL runtime is expected to always
+// populate.
+function isMalformedRequest(FunctionUrlRequest request) returns boolean {
+    string httpMethod = request.requestContext.http.method;
+    string path = request.rawPath;
     return httpMethod.trim().length() == 0 || path.trim().length() == 0;
 }
 
 // Extracts the caller-supplied environment or instance identifier from the
-// request, checking the path parameters first and then falling back to the
-// query string. Returns () when the caller did not supply one, in which
-// case the health check falls back to the plain status payload.
-function extractHandlerId(lambda:APIGatewayProxyRequest request) returns string? {
-    map<string>? pathParameters = request.pathParameters;
-    if pathParameters is map<string> {
-        string? handlerId = pathParameters["handlerId"];
-        if handlerId is string && handlerId.trim().length() > 0 {
-            return handlerId;
-        }
-    }
-    map<string>? queryStringParameters = request.queryStringParameters;
+// request's query string. Returns () when the caller did not supply one, in
+// which case the health check falls back to the plain status payload.
+function extractHandlerId(FunctionUrlRequest request) returns string? {
+    map<string>? queryStringParameters = request?.queryStringParameters;
     if queryStringParameters is map<string> {
         string? handlerId = queryStringParameters["handlerId"];
         if handlerId is string && handlerId.trim().length() > 0 {
@@ -80,10 +73,10 @@ function extractHandlerId(lambda:APIGatewayProxyRequest request) returns string?
     return ();
 }
 
-// Builds the successful health-check proxy response payload. When the
-// caller supplies an environment or instance identifier, it is echoed back
-// in the handlerId field; otherwise the plain status payload is returned.
-function buildHealthCheckResponse(string? handlerId) returns ProxyResponse {
+// Builds the successful health-check response payload. When the caller
+// supplies an environment or instance identifier, it is echoed back in the
+// handlerId field; otherwise the plain status payload is returned.
+function buildHealthCheckResponse(string? handlerId) returns FunctionUrlResponse {
     HealthStatus healthStatus = {
         status: "UP",
         message: "upload notifier service is healthy"
@@ -91,7 +84,7 @@ function buildHealthCheckResponse(string? handlerId) returns ProxyResponse {
     if handlerId is string {
         healthStatus.handlerId = handlerId;
     }
-    ProxyResponse response = {
+    FunctionUrlResponse response = {
         statusCode: 200,
         headers: {"Content-Type": "application/json"},
         body: healthStatus.toJsonString()
@@ -99,14 +92,14 @@ function buildHealthCheckResponse(string? handlerId) returns ProxyResponse {
     return response;
 }
 
-// Builds a clean JSON error proxy response for a malformed request instead
-// of surfacing anything resembling an internal failure trace.
-function buildMalformedRequestResponse() returns ProxyResponse {
+// Builds a clean JSON error response for a malformed request instead of
+// surfacing anything resembling an internal failure trace.
+function buildMalformedRequestResponse() returns FunctionUrlResponse {
     ErrorResponse errorResponse = {
         'error: "BAD_REQUEST",
         message: "the incoming request is malformed"
     };
-    ProxyResponse response = {
+    FunctionUrlResponse response = {
         statusCode: 400,
         headers: {"Content-Type": "application/json"},
         body: errorResponse.toJsonString()
