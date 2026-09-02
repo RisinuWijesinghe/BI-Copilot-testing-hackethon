@@ -1,8 +1,7 @@
-// Represents a single order extracted from an SQS message body.
-public type OrderRecord record {|
-    string orderId;
-    string customerId;
-    decimal totalAmount;
+// Payload handed over by the scheduled job: a fixed batch of pending order
+// IDs that need to be reconciled.
+public type OrderReconciliationEvent record {|
+    string[] orderIds;
 |};
 
 // Summary of a batch processing invocation.

@@ -10,16 +10,16 @@ import ballerinax/aws.lambda;
 const string ON_FAILURE_DESTINATION_ARN = "arn:aws:sqs:us-east-1:000000000000:order-batch-failure-destination-placeholder";
 const string ON_SUCCESS_DESTINATION_ARN = "arn:aws:sqs:us-east-1:000000000000:order-batch-success-destination-placeholder";
 
-// Triggered whenever new order events land in the SQS queue. Processes every
-// message in the batch, validating and parsing each order. Invalid messages
-// (bad JSON or missing required fields) are counted as rejected instead of
-// failing the whole invocation. If the batch itself cannot be processed at
-// all (an outright invocation failure), an error is returned so that AWS
-// routes the failed invocation to ON_FAILURE_DESTINATION_ARN; a normal
-// return here is routed by AWS to ON_SUCCESS_DESTINATION_ARN.
+// Triggered periodically by a scheduled job (schedule/event rule) that hands
+// over a fixed batch of pending order IDs to reconcile. Invalid order IDs
+// (blank or malformed) are counted as rejected instead of failing the whole
+// invocation. If the batch itself cannot be processed at all (an outright
+// invocation failure), an error is returned so that AWS routes the failed
+// invocation to ON_FAILURE_DESTINATION_ARN; a normal return here is routed
+// by AWS to ON_SUCCESS_DESTINATION_ARN.
 @lambda:Function
-public function processOrderBatch(lambda:Context ctx, lambda:SQSEvent event) returns BatchSummary|error {
-    BatchSummary|error summary = buildBatchSummary(ctx, event);
+public function processOrderBatch(lambda:Context ctx, OrderReconciliationEvent event) returns BatchSummary|error {
+    BatchSummary|error summary = buildBatchSummary(event, ctx.getDeadlineMs());
     if summary is error {
         log:printError("order batch invocation failed outright", 'error = summary,
                 destinationArn = ON_FAILURE_DESTINATION_ARN);
@@ -29,31 +29,33 @@ public function processOrderBatch(lambda:Context ctx, lambda:SQSEvent event) ret
     return summary;
 }
 
-// Builds the batch summary by processing every SQS record in the event.
-// Any unexpected, systemic failure while processing the batch (as opposed to
-// a single message being rejected) is surfaced as an error here so that the
-// invocation fails outright and is routed to the failure destination.
-function buildBatchSummary(lambda:Context ctx, lambda:SQSEvent event) returns BatchSummary|error {
-    lambda:SQSRecord[] records = event.Records;
+// Builds the batch summary by reconciling every pending order ID in the
+// scheduled batch. Any unexpected, systemic failure while processing the
+// batch (as opposed to a single order ID being rejected) is surfaced as an
+// error here so that the invocation fails outright and is routed to the
+// failure destination. Kept independent of lambda:Context so the core logic
+// can be unit tested without a live Lambda invocation.
+function buildBatchSummary(OrderReconciliationEvent event, int deadlineTimestamp) returns BatchSummary|error {
+    string[] orderIds = event.orderIds;
     int processedCount = 0;
     int rejectedCount = 0;
 
-    foreach lambda:SQSRecord sqsRecord in records {
-        OrderRecord|error orderRecord = parseOrder(sqsRecord.body);
-        if orderRecord is error {
+    foreach string orderId in orderIds {
+        string|error reconciledOrderId = reconcileOrder(orderId);
+        if reconciledOrderId is error {
             rejectedCount += 1;
-            log:printWarn("rejected order message", messageId = sqsRecord.messageId, 'error = orderRecord);
+            log:printWarn("rejected pending order id", orderId = orderId, 'error = reconciledOrderId);
             continue;
         }
         processedCount += 1;
-        log:printInfo("processed order", orderId = orderRecord.orderId, customerId = orderRecord.customerId);
+        log:printInfo("reconciled order", orderId = reconciledOrderId);
     }
 
     BatchSummary summary = {
-        totalMessages: records.length(),
+        totalMessages: orderIds.length(),
         processedCount: processedCount,
         rejectedCount: rejectedCount,
-        deadlineTimestamp: ctx.getDeadlineMs()
+        deadlineTimestamp: deadlineTimestamp
     };
     return summary;
 }
@@ -63,10 +65,17 @@ function buildBatchSummary(lambda:Context ctx, lambda:SQSEvent event) returns Ba
 // runtime environment can be sanity-checked after deploying.
 @lambda:Function
 public function healthCheck(lambda:Context ctx, json event) returns HealthStatus {
+    return buildHealthStatus(ctx.getRequestId(), ctx.getRemainingExecutionTime());
+}
+
+// Builds the health-check response from plain values. Kept independent of
+// lambda:Context so the core logic can be unit tested without a live Lambda
+// invocation.
+function buildHealthStatus(string requestId, int remainingExecutionTimeMs) returns HealthStatus {
     HealthStatus healthStatus = {
         status: "alive",
-        requestId: ctx.getRequestId(),
-        remainingExecutionTimeMs: ctx.getRemainingExecutionTime()
+        requestId: requestId,
+        remainingExecutionTimeMs: remainingExecutionTimeMs
     };
     return healthStatus;
 }
