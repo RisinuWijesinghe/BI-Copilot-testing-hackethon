@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "upload_notifier"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "Upload notifier"
+
+[build-options]
+sticky = true
