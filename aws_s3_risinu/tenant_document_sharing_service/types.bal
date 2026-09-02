@@ -24,6 +24,20 @@ public type DocumentStatus record {|
     string lastModified;
 |};
 
+# A single document listed directly inside a folder, with a ready-to-use download link.
+public type FolderEntry record {|
+    string name;
+    int sizeInBytes;
+    string lastModified;
+    DownloadLink downloadLink;
+|};
+
+# A page of documents listed directly inside a folder.
+public type FolderListing record {|
+    FolderEntry[] documents;
+    string nextPageToken?;
+|};
+
 # A generic, customer-safe error payload. Never includes AWS error codes, bucket names, or storage paths.
 public type ErrorPayload record {|
     string message;

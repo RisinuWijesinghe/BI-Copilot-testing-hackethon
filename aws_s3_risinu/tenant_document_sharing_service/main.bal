@@ -44,4 +44,20 @@ service /documents on new http:Listener(servicePort) {
     resource function get [string tenantId]/[string documentReference]() returns DocumentStatus|http:NotFound|http:InternalServerError {
         return handleGetDocumentStatus(tenantId, documentReference);
     }
+
+    # Lists the documents directly inside a tenant's folder - not documents nested in subfolders -
+    # each with a ready-to-use download link. An empty folder yields an empty page rather than an
+    # error. A folder path that attempts to escape the tenant's own area of the bucket is rejected
+    # exactly like a folder that does not exist (an empty listing).
+    #
+    # + tenantId - the identifier of the tenant that owns the folder
+    # + folder - the folder path to list, defaults to the tenant's root
+    # + pageSize - the maximum number of documents to return in this page
+    # + pageToken - the continuation token returned by a previous call, omitted to fetch the first page
+    # + return - the page of documents with their download links, a bad request if the configured
+    # default link validity period exceeds the maximum, or a generic server error if the storage layer fails
+    resource function get [string tenantId]/folder(string folder = "", int pageSize = 100, string? pageToken = ())
+            returns FolderListing|http:BadRequest|http:InternalServerError {
+        return handleListFolder(tenantId, folder, pageSize, pageToken);
+    }
 }

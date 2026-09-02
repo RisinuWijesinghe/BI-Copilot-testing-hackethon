@@ -7,6 +7,7 @@ const string GENERIC_STORAGE_ERROR_MESSAGE = "The document storage service is cu
 const string DOCUMENT_NOT_FOUND_MESSAGE = "No document found for the given reference.";
 const string EXPIRATION_TOO_LONG_MESSAGE = "The requested link validity period exceeds the maximum allowed.";
 const string CONTENT_TYPE_NOT_ALLOWED_MESSAGE = "Documents of this type cannot be uploaded.";
+const string FOLDER_DELIMITER = "/";
 
 # Builds the tenant-scoped S3 object key for a document reference, rejecting any reference that
 # could escape the tenant's own area of the bucket (path separators, traversal segments, etc.).
@@ -35,6 +36,46 @@ function isSafeDocumentReference(string documentReference) returns boolean {
     }
     if documentReference == "." || documentReference == ".." {
         return false;
+    }
+    return true;
+}
+
+# Builds the tenant-scoped S3 prefix for a folder path, rejecting any path that could escape the
+# tenant's own area of the bucket (traversal segments, backslashes, leading slashes, etc.).
+# An empty folder path refers to the root of the tenant's area.
+#
+# + tenantId - the tenant identifier
+# + folderPath - the folder path supplied by the caller, empty for the tenant's root
+# + return - the tenant-scoped S3 prefix (always ending in `/`), or `()` if the path is unsafe
+function buildTenantFolderPrefix(string tenantId, string folderPath) returns string? {
+    if !isSafeFolderPath(folderPath) {
+        return ();
+    }
+    if folderPath.length() == 0 {
+        return string `${tenantId}/`;
+    }
+    return string `${tenantId}/${folderPath}/`;
+}
+
+# Checks that a folder path is safe: it must not contain a traversal segment (`.` or `..`), must
+# not contain a backslash, and must not start or end with a slash. An empty path (the tenant's
+# root) is safe.
+#
+# + folderPath - the folder path supplied by the caller
+# + return - true if the path is safe to use as a tenant-scoped S3 prefix
+function isSafeFolderPath(string folderPath) returns boolean {
+    if folderPath.length() == 0 {
+        return true;
+    }
+    if folderPath.includes("\\") || folderPath.startsWith("/") || folderPath.endsWith("/") {
+        return false;
+    }
+    string:RegExp separator = re `/`;
+    string[] segments = separator.split(folderPath);
+    foreach string segment in segments {
+        if segment.trim().length() == 0 || segment == "." || segment == ".." {
+            return false;
+        }
     }
     return true;
 }
@@ -181,4 +222,66 @@ function handleGetDocumentStatus(string tenantId, string documentReference) retu
         contentType: metadataResult.contentType ?: "application/octet-stream",
         lastModified: metadataResult.lastModified
     };
+}
+
+# Handles listing the documents directly inside a tenant's folder - not documents nested in
+# subfolders - each with a ready-to-use download link. An empty folder yields an empty page rather
+# than an error. A folder path that attempts to escape the tenant's own area of the bucket is
+# rejected identically to a folder that does not exist (an empty listing).
+#
+# + tenantId - the tenant identifier
+# + folderPath - the folder path to list, empty for the tenant's root
+# + pageSize - the maximum number of documents to return in this page
+# + pageToken - the continuation token returned by a previous call, or `()` to fetch the first page
+# + return - the page of documents with their download links, a bad request if the requested link
+# validity period is too long, or a generic server error
+function handleListFolder(string tenantId, string folderPath, int pageSize, string? pageToken)
+        returns FolderListing|http:BadRequest|http:InternalServerError {
+    string? folderPrefix = buildTenantFolderPrefix(tenantId, folderPath);
+    if folderPrefix is () {
+        return {documents: []};
+    }
+
+    int? expirationMinutes = resolveLinkExpirationMinutes(());
+    if expirationMinutes is () {
+        return <http:BadRequest>{body: {message: EXPIRATION_TOO_LONG_MESSAGE}};
+    }
+
+    s3:ListObjectsResponse|s3:Error listResult = s3Client->listObjects(bucketName, prefix = folderPrefix,
+            delimiter = FOLDER_DELIMITER, maxKeys = pageSize, continuationToken = pageToken ?: "");
+    if listResult is s3:Error {
+        log:printError("Failed to list folder contents in storage", 'error = listResult);
+        return <http:InternalServerError>{body: {message: GENERIC_STORAGE_ERROR_MESSAGE}};
+    }
+
+    FolderEntry[] documents = [];
+    foreach s3:S3Object s3Object in listResult.objects {
+        string documentName = s3Object.key.substring(folderPrefix.length());
+        if documentName.length() == 0 {
+            // The folder placeholder object itself, not an actual document.
+            continue;
+        }
+
+        string|s3:Error presignedUrl = s3Client->createPresignedUrl(bucketName, s3Object.key,
+                expirationMinutes = expirationMinutes, httpMethod = s3:GET);
+        if presignedUrl is s3:Error {
+            log:printError("Failed to create presigned download link for a folder entry", 'error = presignedUrl);
+            return <http:InternalServerError>{body: {message: GENERIC_STORAGE_ERROR_MESSAGE}};
+        }
+
+        documents.push({
+            name: documentName,
+            sizeInBytes: s3Object.size,
+            lastModified: s3Object.lastModified,
+            downloadLink: {url: presignedUrl, expiresAt: computeExpiresAt(expirationMinutes)}
+        });
+    }
+
+    if listResult.isTruncated {
+        string? nextContinuationToken = listResult.nextContinuationToken;
+        if nextContinuationToken is string {
+            return {documents, nextPageToken: nextContinuationToken};
+        }
+    }
+    return {documents};
 }
