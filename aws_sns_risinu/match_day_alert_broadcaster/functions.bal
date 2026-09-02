@@ -22,45 +22,21 @@ function isValidEmail(string email) returns boolean {
     return EMAIL_PATTERN.isFullMatch(trimmedEmail);
 }
 
-# Builds the SNS filter policy for a given alert preference. Fans who only want goals
-# get a policy that matches only the GOAL event type; fans who want everything get no
-# filter policy at all, so every published alert reaches them.
-#
-# + preference - the fan's chosen alert preference
-# + return - the filter policy json to set on the subscription, or () if none is needed
-function buildFilterPolicy(AlertPreference preference) returns json? {
-    if preference == GOAL {
-        return {"eventType": ["GOAL"]};
-    }
-    return ();
-}
-
-# Subscribes the given email address to the shared match alerts topic, honoring the
-# fan's alert preference via an SNS subscription filter policy, and records the
-# subscriber in the local registry.
+# Subscribes the given email address to the shared match alerts topic and records
+# the subscriber in the local registry.
 #
 # + email - the fan's email address
-# + preference - the kind of updates the fan wants to receive
 # + return - the subscription result, or a clear error if it could not be completed
-function subscribeFanToMatchAlerts(string email, AlertPreference preference) returns SubscriptionResult|error {
+function subscribeFanToMatchAlerts(string email) returns SubscriptionResult|error {
     string|sns:Error subscriptionArn = snsClient->subscribe(matchAlertsTopicArn, email, sns:EMAIL);
     if subscriptionArn is sns:Error {
         return error("Unable to complete the subscription at this time. Please try again later.");
-    }
-
-    json? filterPolicy = buildFilterPolicy(preference);
-    if filterPolicy is json {
-        sns:Error? attributeResult = snsClient->setSubscriptionAttributes(subscriptionArn, sns:FILTER_POLICY, filterPolicy);
-        if attributeResult is sns:Error {
-            return error("Unable to complete the subscription at this time. Please try again later.");
-        }
     }
 
     string subscriberId = uuid:createType1AsString();
     SubscriberRecord subscriberRecord = {
         subscriberId,
         email,
-        preference,
         subscriptionArn
     };
     subscriberRegistry[subscriberId] = subscriberRecord;
@@ -68,7 +44,6 @@ function subscribeFanToMatchAlerts(string email, AlertPreference preference) ret
     return {
         subscriberId,
         email,
-        preference,
         status: "subscription pending confirmation"
     };
 }
@@ -80,8 +55,7 @@ function listCurrentSubscribers() returns Subscriber[] {
     return from SubscriberRecord subscriberRecord in subscriberRegistry.toArray()
         select {
             subscriberId: subscriberRecord.subscriberId,
-            email: subscriberRecord.email,
-            preference: subscriberRecord.preference
+            email: subscriberRecord.email
         };
 }
 
@@ -104,21 +78,26 @@ function unsubscribeFan(string subscriberId) returns boolean|error {
     return true;
 }
 
-# Publishes a match alert message, tagged with its event type, to the shared match
-# alerts topic. SNS subscription filter policies ensure only fans who asked for that
-# kind of update are actually notified.
+# Publishes several distinct match alerts to the shared match alerts topic in a
+# single batch call, rather than sending each one individually. SNS accepts up to
+# ten entries per batch call.
 #
-# + eventType - the kind of event the alert is about
-# + message - the alert text to broadcast
-# + return - the publish result, or a clear error if the alert could not be sent
-function broadcastMatchAlert(EventType eventType, string message) returns AlertResult|error {
-    map<sns:MessageAttributeValue> attributes = {
-        "eventType": eventType
-    };
-    sns:PublishMessageResponse|sns:Error result =
-        snsClient->publish(matchAlertsTopicArn, message, sns:TOPIC, attributes);
-    if result is sns:Error {
-        return error("Unable to send the alert at this time. Please try again later.");
+# + alerts - the alerts to broadcast, each with a caller-chosen id
+# + return - the outcome of each alert in the batch, or a clear error if the batch could not be sent at all
+function broadcastMatchAlerts(AlertItem[] alerts) returns AlertOutcome[]|error {
+    sns:PublishBatchRequestEntry[] entries = from AlertItem alertItem in alerts
+        select {id: alertItem.id, message: alertItem.message};
+
+    sns:PublishBatchResponse|sns:Error response = snsClient->publishBatch(matchAlertsTopicArn, entries);
+    if response is sns:Error {
+        return error("Unable to send the alerts at this time. Please try again later.");
     }
-    return {status: "alert sent", messageId: result.messageId};
+
+    AlertOutcome[] outcomes = from sns:PublishBatchResultEntry successEntry in response.successful
+        select {id: successEntry.id, status: "alert sent", messageId: successEntry.messageId};
+
+    AlertOutcome[] failures = from sns:BatchResultErrorEntry failedEntry in response.failed
+        select {id: failedEntry.id, status: "alert failed", errorMessage: "Unable to send this alert. Please try again later."};
+
+    return [...outcomes, ...failures];
 }

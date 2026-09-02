@@ -1,37 +1,26 @@
 import ballerina/http;
 
-# What kind of match updates a fan wants to receive.
-public enum AlertPreference {
-    GOAL,
-    ALL
-}
-
-# What kind of event a broadcast alert is about.
-public enum EventType {
-    GOAL,
-    HALF_TIME,
-    FULL_TIME,
-    KICK_OFF,
-    OTHER
-}
-
 # Request payload for subscribing a fan's email to match alerts.
 public type SubscriptionRequest record {|
     string email;
-    AlertPreference preference = ALL;
 |};
 
-# Request payload for broadcasting a match alert.
-public type AlertRequest record {|
-    EventType eventType;
+# A single alert to be broadcast, identified by a caller-chosen id so the outcome
+# of each one can be reported back individually.
+public type AlertItem record {|
+    string id;
     string message;
+|};
+
+# Request payload for broadcasting a batch of match alerts in a single call.
+public type AlertBatchRequest record {|
+    AlertItem[] alerts;
 |};
 
 # A subscribed fan, as tracked in the broadcaster's own registry.
 public type Subscriber record {|
     string subscriberId;
     string email;
-    AlertPreference preference;
 |};
 
 # Internal registry record — carries the SNS subscription ARN in addition to the public fields.
@@ -50,20 +39,27 @@ public type SubscriptionAccepted record {|
 public type SubscriptionResult record {|
     string subscriberId;
     string email;
-    AlertPreference preference;
     string status;
 |};
 
-# Response returned when an alert has been broadcast successfully.
-public type AlertSent record {|
+# Response returned when a batch of alerts has been broadcast, reporting the outcome
+# of each individual alert in the batch.
+public type AlertBatchSent record {|
     *http:Ok;
-    AlertResult body;
+    AlertBatchResult body;
 |};
 
-# Body of a successful alert broadcast response.
-public type AlertResult record {|
+# The outcome of a single alert within a broadcast batch.
+public type AlertOutcome record {|
+    string id;
     string status;
-    string messageId;
+    string messageId?;
+    string errorMessage?;
+|};
+
+# Body of a batch alert broadcast response.
+public type AlertBatchResult record {|
+    AlertOutcome[] results;
 |};
 
 # Response returned with the list of current subscribers.

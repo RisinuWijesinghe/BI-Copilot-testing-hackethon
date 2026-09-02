@@ -6,7 +6,7 @@ service /match\-alerts on matchDayListener {
 
     # Signs a fan up to receive future match alerts.
     #
-    # + request - the subscription request containing the fan's email address and alert preference
+    # + request - the subscription request containing the fan's email address
     # + return - 202 Accepted on success, 400 for an unusable email, or 500 if the subscription failed
     resource function post subscribers(@http:Payload SubscriptionRequest request)
             returns SubscriptionAccepted|InvalidRequest|ProcessingFailed {
@@ -17,7 +17,7 @@ service /match\-alerts on matchDayListener {
             };
         }
 
-        SubscriptionResult|error result = subscribeFanToMatchAlerts(email, request.preference);
+        SubscriptionResult|error result = subscribeFanToMatchAlerts(email);
         if result is error {
             return <ProcessingFailed>{
                 body: {message: result.message()}
@@ -59,27 +59,36 @@ service /match\-alerts on matchDayListener {
         };
     }
 
-    # Sends a match alert to everyone currently subscribed to that kind of update. Intended for admin use.
+    # Sends a batch of distinct match alerts to everyone currently subscribed, in a single call.
+    # Intended for admin use.
     #
-    # + request - the alert request containing the event type and message text to broadcast
-    # + return - 200 OK on success, 400 if the message text is missing, or 500 if the alert could not be sent
-    resource function post alerts(@http:Payload AlertRequest request)
-            returns AlertSent|InvalidRequest|ProcessingFailed {
-        string message = request.message.trim();
-        if message.length() == 0 {
+    # + request - the alert batch request containing the alerts to broadcast
+    # + return - 200 OK with the per-alert outcomes, 400 if the batch is empty or an alert has no text, or 500 if the batch could not be sent
+    resource function post alerts(@http:Payload AlertBatchRequest request)
+            returns AlertBatchSent|InvalidRequest|ProcessingFailed {
+        AlertItem[] alerts = request.alerts;
+        if alerts.length() == 0 {
             return <InvalidRequest>{
-                body: {message: "Alert message text must not be empty."}
+                body: {message: "At least one alert must be provided."}
             };
         }
+        foreach AlertItem alertItem in alerts {
+            string trimmedMessage = alertItem.message.trim();
+            if trimmedMessage.length() == 0 {
+                return <InvalidRequest>{
+                    body: {message: "Each alert must have non-empty message text."}
+                };
+            }
+        }
 
-        AlertResult|error result = broadcastMatchAlert(request.eventType, message);
+        AlertOutcome[]|error result = broadcastMatchAlerts(alerts);
         if result is error {
             return <ProcessingFailed>{
                 body: {message: result.message()}
             };
         }
-        return <AlertSent>{
-            body: result
+        return <AlertBatchSent>{
+            body: {results: result}
         };
     }
 }
