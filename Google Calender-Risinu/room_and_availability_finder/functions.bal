@@ -36,6 +36,20 @@ function validateAvailabilityRequest(AvailabilityRequest request) returns string
     return ();
 }
 
+# Validates a quick-capture request, returning a message naming the broken rule if invalid.
+#
+# + request - the incoming quick-capture request
+# + return - () if the request is valid, otherwise a message naming the rule that was broken
+function validateQuickCaptureRequest(QuickCaptureRequest request) returns string? {
+    if request.text.trim().length() == 0 {
+        return "text must not be blank";
+    }
+    if request.calendar.trim().length() == 0 {
+        return "calendar must not be blank";
+    }
+    return ();
+}
+
 # Computes the gaps within the requested period during which every calendar that could be read is simultaneously free.
 #
 # + periodStart - the start of the requested period, in RFC3339 format
@@ -102,17 +116,19 @@ function computeCommonFreeSlots(string periodStart, string periodEnd, CalendarAv
     return freeSlots;
 }
 
-# Queries free/busy information for the requested calendars and computes the common free slots.
+# Queries free/busy information for the given calendars over the given period.
 #
-# + request - the availability request
-# + return - the availability response, or an error if the calendar service could not be reached at all
-function getAvailability(AvailabilityRequest request) returns AvailabilityResponse|error {
-    gcalendar:FreeBusyRequestItem[] requestItems = from string calendarId in request.calendars
+# + calendars - the calendar addresses to query
+# + periodStart - the start of the period to query, in RFC3339 format
+# + periodEnd - the end of the period to query, in RFC3339 format
+# + return - the per-calendar availability results, or an error if the calendar service could not be reached at all
+function queryCalendarAvailability(string[] calendars, string periodStart, string periodEnd) returns CalendarAvailability[]|error {
+    gcalendar:FreeBusyRequestItem[] requestItems = from string calendarId in calendars
         select {id: calendarId};
 
     gcalendar:FreeBusyRequest freeBusyRequest = {
-        timeMin: request.startTime,
-        timeMax: request.endTime,
+        timeMin: periodStart,
+        timeMax: periodEnd,
         items: requestItems
     };
 
@@ -121,7 +137,7 @@ function getAvailability(AvailabilityRequest request) returns AvailabilityRespon
     record {|gcalendar:FreeBusyCalendar...;|}? freeBusyCalendars = freeBusyResponse.calendars;
     CalendarAvailability[] calendarAvailabilities = [];
     if freeBusyCalendars is record {|gcalendar:FreeBusyCalendar...;|} {
-        foreach string calendarId in request.calendars {
+        foreach string calendarId in calendars {
             if freeBusyCalendars.hasKey(calendarId) {
                 gcalendar:FreeBusyCalendar freeBusyCalendar = freeBusyCalendars.get(calendarId);
                 calendarAvailabilities.push(toCalendarAvailability(calendarId, freeBusyCalendar));
@@ -133,11 +149,155 @@ function getAvailability(AvailabilityRequest request) returns AvailabilityRespon
             }
         }
     }
+    return calendarAvailabilities;
+}
 
+# Queries free/busy information for the requested calendars and computes the common free slots.
+#
+# + request - the availability request
+# + return - the availability response, or an error if the calendar service could not be reached at all
+function getAvailability(AvailabilityRequest request) returns AvailabilityResponse|error {
+    CalendarAvailability[] calendarAvailabilities = check queryCalendarAvailability(request.calendars, request.startTime, request.endTime);
     FreeSlot[] commonFreeSlots = check computeCommonFreeSlots(request.startTime, request.endTime, calendarAvailabilities);
 
     return {
         calendars: calendarAvailabilities,
         commonFreeSlots: commonFreeSlots
+    };
+}
+
+# Validates a booking request, returning a message naming the broken rule if invalid.
+#
+# + request - the incoming booking request
+# + return - () if the request is valid, otherwise a message naming the rule that was broken
+function validateBookingRequest(BookingRequest request) returns string? {
+    string? periodValidationError = validateAvailabilityRequest({
+        calendars: request.calendars,
+        startTime: request.startTime,
+        endTime: request.endTime
+    });
+    if periodValidationError is string {
+        return periodValidationError;
+    }
+
+    if request.durationMinutes <= 0 {
+        return "durationMinutes must be greater than zero";
+    }
+
+    if request.title.trim().length() == 0 {
+        return "title must not be blank";
+    }
+
+    if request.roomCalendar.trim().length() == 0 {
+        return "roomCalendar must not be blank";
+    }
+
+    return ();
+}
+
+# Finds the earliest slot, among the given free slots, that is at least as long as the requested duration.
+#
+# + freeSlots - the free slots to search, assumed to be in chronological order
+# + durationMinutes - the required length of the slot, in minutes
+# + return - the earliest fitting window (clipped to the requested duration), or () if none fits
+function findEarliestFittingSlot(FreeSlot[] freeSlots, int durationMinutes) returns FreeSlot|error? {
+    time:Seconds requiredSeconds = <decimal>durationMinutes * 60;
+    foreach FreeSlot freeSlot in freeSlots {
+        time:Utc slotStartUtc = check time:utcFromString(freeSlot.startTime);
+        time:Utc slotEndUtc = check time:utcFromString(freeSlot.endTime);
+        time:Seconds slotSeconds = time:utcDiffSeconds(slotEndUtc, slotStartUtc);
+        if slotSeconds >= requiredSeconds {
+            time:Utc bookingEndUtc = time:utcAddSeconds(slotStartUtc, requiredSeconds);
+            return {startTime: freeSlot.startTime, endTime: time:utcToString(bookingEndUtc)};
+        }
+    }
+    return ();
+}
+
+# Finds the earliest window in the requested period where every participant is free for the requested duration,
+# and books it on the nominated room calendar, inviting the rest of the participants.
+#
+# + request - the booking request
+# + return - the booking response (whether or not a fitting window was found), or an error if the calendar
+# service could not be reached at all
+function bookEarliestSlot(BookingRequest request) returns BookingResponse|error {
+    string[] allCalendars = request.calendars;
+    if allCalendars.indexOf(request.roomCalendar) is () {
+        allCalendars = [...allCalendars, request.roomCalendar];
+    }
+
+    CalendarAvailability[] calendarAvailabilities = check queryCalendarAvailability(allCalendars, request.startTime, request.endTime);
+
+    string[] unreadableCalendars = from CalendarAvailability calendarAvailability in calendarAvailabilities
+        where calendarAvailability?.'error is string
+        select calendarAvailability.calendar;
+    if unreadableCalendars.length() > 0 {
+        return {
+            booked: false,
+            message: string `could not determine availability because these calendars could not be read: ${string:'join(", ", ...unreadableCalendars)}`
+        };
+    }
+
+    FreeSlot[] commonFreeSlots = check computeCommonFreeSlots(request.startTime, request.endTime, calendarAvailabilities);
+
+    FreeSlot? fittingSlot = check findEarliestFittingSlot(commonFreeSlots, request.durationMinutes);
+    if fittingSlot is () {
+        return {
+            booked: false,
+            message: string `no window of at least ${request.durationMinutes} minutes was free for every participant in the requested period`
+        };
+    }
+
+    string[] invitees = from string calendarId in request.calendars
+        where calendarId != request.roomCalendar
+        select calendarId;
+
+    gcalendar:EventAttendee[] attendees = from string invitee in invitees
+        select {email: invitee};
+    attendees.push({email: request.roomCalendar, 'resource: true});
+
+    gcalendar:Event newEvent = {
+        summary: request.title,
+        'start: {dateTime: fittingSlot.startTime},
+        end: {dateTime: fittingSlot.endTime},
+        attendees: attendees
+    };
+
+    gcalendar:Event _ = check calendarClient->/calendars/[request.roomCalendar]/events.post(newEvent);
+
+    return {
+        booked: true,
+        slot: fittingSlot,
+        roomCalendar: request.roomCalendar,
+        invitees: invitees,
+        message: "booked the earliest available window"
+    };
+}
+
+# Creates a calendar entry from a single line of free text on the nominated calendar.
+#
+# + request - the quick-capture request
+# + return - the quick-capture response, or an error if the calendar service could not be reached at all
+function quickCaptureEntry(QuickCaptureRequest request) returns QuickCaptureResponse|error {
+    gcalendar:Event createdEvent = check calendarClient->/calendars/[request.calendar]/events/quickAdd.post(request.text);
+
+    string title = createdEvent.summary ?: request.text;
+    gcalendar:EventDateTime? eventStart = createdEvent?.'start;
+    gcalendar:EventDateTime? eventEnd = createdEvent?.end;
+
+    string? startTime = ();
+    if eventStart is gcalendar:EventDateTime {
+        startTime = eventStart.dateTime ?: eventStart.date;
+    }
+    string? endTime = ();
+    if eventEnd is gcalendar:EventDateTime {
+        endTime = eventEnd.dateTime ?: eventEnd.date;
+    }
+
+    return {
+        calendar: request.calendar,
+        title: title,
+        startTime: startTime,
+        endTime: endTime
     };
 }
