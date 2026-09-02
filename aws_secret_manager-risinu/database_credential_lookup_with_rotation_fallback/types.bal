@@ -21,6 +21,15 @@ public type CredentialsNotFound record {|
     ErrorMessage body;
 |};
 
+# Returned when the current version of the credentials secret is not
+# available for any reason. Surfaced loudly rather than silently falling
+# back to a previous version, so an on-call engineer notices a rotation
+# problem immediately instead of the service running on stale creds.
+public type CredentialsOutOfDate record {|
+    *http:ServiceUnavailable;
+    ErrorMessage body;
+|};
+
 # Returned for any other failure while retrieving or parsing the credentials.
 # Never carries the underlying secret contents or stack trace.
 public type CredentialsUnavailable record {|
