@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "match_day_alert_broadcaster"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Match-day alert broadcaster"
+
+[build-options]
+sticky = true

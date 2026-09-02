@@ -1,0 +1,3 @@
+[workspace]
+title = "AWS SNS-Risinu"
+packages = ["match_day_alert_broadcaster"]
