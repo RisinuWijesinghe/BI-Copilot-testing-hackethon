@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "backup_ingest_worker"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "Backup ingest worker"
+
+[build-options]
+sticky = true
