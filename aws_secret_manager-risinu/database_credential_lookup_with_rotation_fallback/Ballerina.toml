@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "database_credential_lookup_with_rotation_fallback"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "Database credential lookup with rotation fallback"
+
+[build-options]
+sticky = true
