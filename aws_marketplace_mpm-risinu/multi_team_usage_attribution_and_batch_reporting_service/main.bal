@@ -4,10 +4,8 @@ import ballerinax/aws.marketplace.mpm;
 
 service /billing on new http:Listener(8080) {
 
-    # Reports a batch of usage events collected from multiple internal teams that share one AWS
-    # Marketplace product, in a single upstream request, so the day's usage is billed correctly.
-    # Each event is tagged with its originating internal team via a usage allocation so it can be
-    # reconciled against internal cost reports later. Every submitted event is matched back to an
+    # Reports a batch of usage events, aggregated by customer and feature, in a single upstream
+    # request, so the day's usage is billed correctly. Every submitted event is matched back to an
     # outcome (accepted, duplicate, not subscribed, or unprocessed) so finance can reconcile the
     # response against what they sent in. Batches larger than AWS Marketplace's per-request limit
     # are rejected up front rather than partially submitted.
@@ -67,7 +65,6 @@ service /billing on new http:Listener(8080) {
                     dimension: usageEvent.dimension,
                     quantity: usageEvent.quantity,
                     usageTimestamp: usageEvent.usageTimestamp,
-                    internalTeam: usageEvent.internalTeam,
                     outcomeStatus: "UNPROCESSED",
                     message: "The usage batch could not be submitted to AWS Marketplace; it should be retried."
                 };

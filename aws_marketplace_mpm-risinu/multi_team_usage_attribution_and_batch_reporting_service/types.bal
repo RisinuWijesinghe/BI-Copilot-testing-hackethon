@@ -1,5 +1,4 @@
-# A single unit of feature usage collected from one of the internal teams sharing the
-# AWS Marketplace product, submitted by the finance team for batch reporting.
+# A single unit of feature usage for a customer, submitted by the finance team for batch reporting.
 public type TeamUsageEvent record {|
     # The customer's AWS account ID this usage applies to
     string customerAwsAccountId;
@@ -9,8 +8,6 @@ public type TeamUsageEvent record {|
     int quantity;
     # When the usage occurred, in RFC 3339 format
     string usageTimestamp;
-    # The internal team that generated this usage, for later cost reconciliation
-    string internalTeam;
 |};
 
 # The request body for reporting a batch of usage events collected across internal teams.
@@ -30,8 +27,6 @@ public type UsageEventOutcome record {|
     int quantity;
     # When the usage was recorded as having occurred, as submitted
     string usageTimestamp;
-    # The internal team that generated this usage, as submitted
-    string internalTeam;
     # ACCEPTED, DUPLICATE, NOT_SUBSCRIBED, or UNPROCESSED
     string outcomeStatus;
     # A human-readable explanation of the outcome
