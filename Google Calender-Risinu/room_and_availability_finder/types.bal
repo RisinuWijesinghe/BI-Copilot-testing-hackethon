@@ -92,3 +92,81 @@ public type QuickCaptureResponse record {|
     # End of the created event, in RFC3339 format, if known
     string? endTime = ();
 |};
+
+# Days of the week a recurring booking can repeat on.
+public type Weekday "MO"|"TU"|"WE"|"TH"|"FR"|"SA"|"SU";
+
+# Request body for finding and booking the earliest common free slot as a weekly-recurring meeting.
+public type RecurringBookingRequest record {|
+    # Calendar addresses (people or rooms) that must all be free
+    string[] calendars;
+    # Start of the period to search within for the first occurrence, in RFC3339 format
+    string startTime;
+    # End of the period to search within for the first occurrence, in RFC3339 format
+    string endTime;
+    # Length of each occurrence, in minutes
+    int durationMinutes;
+    # Title of the meeting
+    string title;
+    # Calendar address of the room to book the meeting on
+    string roomCalendar;
+    # Days of the week the meeting repeats on
+    Weekday[] weekdays;
+    # Date (RFC3339) after which the recurrence stops. Exactly one of untilDate/occurrenceCount must be given
+    string untilDate?;
+    # Number of occurrences to repeat for. Exactly one of untilDate/occurrenceCount must be given
+    int occurrenceCount?;
+|};
+
+# Successful response body for a recurring booking request, whether or not a starting slot was found.
+public type RecurringBookingResponse record {|
+    # Whether a fitting starting window was found and the recurring meeting was booked
+    boolean booked;
+    # The window that was booked for the first occurrence, if any
+    FreeSlot? slot = ();
+    # The room the meeting was booked on, if any
+    string? roomCalendar = ();
+    # The participants invited, if any
+    string[]? invitees = ();
+    # The identifier of the created recurring booking, if any
+    string? eventId = ();
+    # The recurrence rule that was applied, if any
+    string? recurrence = ();
+    # A human-readable explanation, especially useful when nothing was booked
+    string message;
+|};
+
+# One expanded occurrence of a recurring booking.
+public type Occurrence record {|
+    # Start of this occurrence, in RFC3339 format
+    string? startTime = ();
+    # End of this occurrence, in RFC3339 format
+    string? endTime = ();
+    # The status of this occurrence, e.g. "confirmed" or "cancelled" (dropped)
+    string status;
+|};
+
+# Response body listing the expanded occurrences of a recurring booking within a date range.
+public type OccurrencesResponse record {|
+    Occurrence[] occurrences;
+|};
+
+# Request body for relocating an existing booking from one room calendar to another.
+public type MoveBookingRequest record {|
+    # Calendar address the booking currently lives on
+    string sourceCalendar;
+    # Identifier of the event to relocate
+    string eventId;
+    # Calendar address to move the booking to
+    string destinationCalendar;
+|};
+
+# Successful response body for a move request.
+public type MoveBookingResponse record {|
+    # Identifier of the moved event
+    string eventId;
+    # The calendar the booking moved from
+    string fromCalendar;
+    # The calendar the booking now lives on
+    string toCalendar;
+|};
