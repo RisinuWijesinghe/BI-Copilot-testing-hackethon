@@ -67,4 +67,46 @@ service /sms\-test on smsTestListener {
             body: result
         };
     }
+
+    # Sends a one-off text message to a confirmed test phone number. Refuses to send, with a
+    # clear reason, if the number has opted out of receiving messages.
+    #
+    # + phoneNumber - the confirmed test phone number to send the message to
+    # + request - the send request containing the message text
+    # + return - 200 OK on success, 403 if the number has opted out, or 500 if the message could not be sent
+    resource function post test\-numbers/[string phoneNumber]/messages(@http:Payload SendTestMessageRequest request)
+            returns MessageSent|RecipientOptedOut|ProcessingFailed {
+        string message = request.message;
+
+        MessageSendResult|RecipientOptedOutError|error result = sendTestMessage(phoneNumber, message);
+        if result is RecipientOptedOutError {
+            return <RecipientOptedOut>{
+                body: {message: result.message()}
+            };
+        }
+        if result is error {
+            return <ProcessingFailed>{
+                body: {message: result.message()}
+            };
+        }
+        return <MessageSent>{
+            body: result
+        };
+    }
+
+    # Removes a test phone number that is no longer needed.
+    #
+    # + phoneNumber - the test phone number to remove
+    # + return - 200 OK on success, or 500 if the removal failed
+    resource function delete test\-numbers/[string phoneNumber]() returns TestNumberRemoved|ProcessingFailed {
+        boolean|error result = removeTestPhoneNumber(phoneNumber);
+        if result is error {
+            return <ProcessingFailed>{
+                body: {message: result.message()}
+            };
+        }
+        return <TestNumberRemoved>{
+            body: {status: "removed"}
+        };
+    }
 }
