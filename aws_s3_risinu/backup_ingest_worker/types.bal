@@ -14,3 +14,18 @@ public type IngestSummary record {|
     int failedCount;
     FileUploadResult[] results;
 |};
+
+// The outcome of archiving a single aged backup object.
+public type ArchiveMoveResult record {|
+    string objectKey;
+    boolean succeeded;
+    string reason?;
+|};
+
+// The overall outcome of a retention sweep.
+public type RetentionSweepSummary record {|
+    int consideredCount;
+    int movedCount;
+    int failedCount;
+    ArchiveMoveResult[] results;
+|};

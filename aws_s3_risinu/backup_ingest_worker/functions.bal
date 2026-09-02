@@ -262,3 +262,138 @@ function printIngestSummary(IngestSummary summary) {
         }
     }
 }
+
+# Determines whether an S3 object's age exceeds the configured retention period.
+#
+# + lastModified - the object's last modified timestamp, as an RFC 3339 string
+# + return - true if the object is older than the configured retention period, or an `error` if the
+# timestamp cannot be parsed
+function isPastRetention(string lastModified) returns boolean|error {
+    time:Utc lastModifiedUtc = check time:utcFromString(lastModified);
+    time:Seconds ageInSeconds = time:utcDiffSeconds(time:utcNow(), lastModifiedUtc);
+    decimal ageInDays = ageInSeconds / (24 * 60 * 60);
+    return ageInDays >= <decimal>retentionDays;
+}
+
+# Builds the archive-area object key for a given backup object key.
+#
+# + objectKey - the backup object's key in the incoming area
+# + return - the corresponding key under the long-term archive area
+function buildArchiveObjectKey(string objectKey) returns string => archiveKeyPrefix + objectKey;
+
+# Moves a single aged backup object into the long-term archive area: the object is copied to the
+# archive area in the cheaper storage class, the copy is confirmed to exist, and only then is the
+# original removed. Nothing is ever deleted unless its archived copy is confirmed to exist first.
+#
+# + objectKey - the backup object's key in the incoming area
+# + return - `()` once the object has been safely archived, or an `error` describing what went wrong
+function archiveAgedObject(string objectKey) returns error? {
+    string archiveObjectKey = buildArchiveObjectKey(objectKey);
+
+    s3:Error? copyResult = s3Client->copyObject(bucketName, objectKey, bucketName, archiveObjectKey,
+            storageClass = archiveStorageClass);
+    if copyResult is s3:Error {
+        log:printError("Failed to copy aged backup to the archive area", 'error = copyResult, objectKey = objectKey);
+        return error("Failed to copy the backup to the archive area");
+    }
+
+    boolean|s3:Error archiveExistsResult = s3Client->doesObjectExist(bucketName, archiveObjectKey);
+    if archiveExistsResult is s3:Error {
+        log:printError("Failed to confirm the archived copy exists", 'error = archiveExistsResult, objectKey = objectKey);
+        return error("Failed to confirm the archived copy exists");
+    }
+    if !archiveExistsResult {
+        log:printError("Archived copy could not be confirmed after copy; leaving the original in place",
+                objectKey = objectKey);
+        return error("Archived copy could not be confirmed");
+    }
+
+    s3:Error? deleteResult = s3Client->deleteObject(bucketName, objectKey);
+    if deleteResult is s3:Error {
+        log:printError("Backup was archived but removing the original failed; a copy still exists in the " +
+                "archive area and the original remains in place", 'error = deleteResult, objectKey = objectKey);
+        return error("Failed to remove the original after archiving");
+    }
+}
+
+# Sweeps the backup area for objects older than the configured retention period and moves each one
+# into the long-term archive area. A sweep that finds nothing to do is a normal, quiet outcome, not
+# a failure. Objects already under the archive prefix are never reconsidered.
+#
+# + return - the sweep summary, or an `error` if the backup area could not be listed
+function sweepRetention() returns RetentionSweepSummary|error {
+    s3:S3Object[] agedObjects = check listAgedBackupObjects();
+
+    ArchiveMoveResult[] results = [];
+    int movedCount = 0;
+    int failedCount = 0;
+    foreach s3:S3Object s3Object in agedObjects {
+        error? archiveResult = archiveAgedObject(s3Object.key);
+        if archiveResult is error {
+            results.push({objectKey: s3Object.key, succeeded: false, reason: "Archiving failed"});
+            failedCount += 1;
+        } else {
+            results.push({objectKey: s3Object.key, succeeded: true});
+            movedCount += 1;
+        }
+    }
+
+    return {
+        consideredCount: agedObjects.length(),
+        movedCount,
+        failedCount,
+        results
+    };
+}
+
+# Lists the backup objects in the bucket that are older than the configured retention period,
+# excluding anything already under the archive prefix.
+#
+# + return - the aged backup objects found, or an `error` if the bucket could not be listed
+function listAgedBackupObjects() returns s3:S3Object[]|error {
+    s3:ListObjectsResponse|s3:Error listResult = s3Client->listObjects(bucketName);
+    if listResult is s3:Error {
+        log:printError("Failed to list backup objects for the retention sweep", 'error = listResult);
+        return error("Failed to list backup objects for the retention sweep");
+    }
+
+    s3:S3Object[] agedObjects = [];
+    foreach s3:S3Object s3Object in listResult.objects {
+        if s3Object.key.startsWith(archiveKeyPrefix) {
+            continue;
+        }
+        boolean|error pastRetention = isPastRetention(s3Object.lastModified);
+        if pastRetention is error {
+            log:printWarn("Could not determine the age of a backup object; skipping it for this sweep",
+                    'error = pastRetention, objectKey = s3Object.key);
+            continue;
+        }
+        if pastRetention {
+            agedObjects.push(s3Object);
+        }
+    }
+    return agedObjects;
+}
+
+# Prints a customer-safe summary of the retention sweep to the console. A sweep that finds nothing
+# to archive is reported plainly as a normal outcome, not as a failure. Only object keys, counts,
+# and generic reasons are printed - never credentials, AWS error codes, or other internal details.
+#
+# + summary - the retention sweep summary to print
+function printRetentionSweepSummary(RetentionSweepSummary summary) {
+    if summary.consideredCount == 0 {
+        log:printInfo("Retention sweep summary: no backups older than the retention period were found");
+        return;
+    }
+
+    log:printInfo("Retention sweep summary", consideredCount = summary.consideredCount,
+            movedCount = summary.movedCount, failedCount = summary.failedCount);
+
+    foreach ArchiveMoveResult result in summary.results {
+        if result.succeeded {
+            log:printInfo(string `  [ARCHIVED] ${result.objectKey}`);
+        } else {
+            log:printInfo(string `  [FAIL]     ${result.objectKey} - ${result.reason ?: "unknown reason"}`);
+        }
+    }
+}
