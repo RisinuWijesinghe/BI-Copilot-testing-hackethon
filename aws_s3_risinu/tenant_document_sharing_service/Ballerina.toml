@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "tenant_document_sharing_service"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "Tenant document sharing service"
+
+[build-options]
+sticky = true
