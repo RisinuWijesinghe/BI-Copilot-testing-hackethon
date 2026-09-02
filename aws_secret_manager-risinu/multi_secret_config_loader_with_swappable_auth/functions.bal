@@ -1,15 +1,27 @@
 import ballerinax/aws.secretmanager;
 
+// In-memory cache of the secrets loaded at startup. Populated once in main()
+// before the app is considered started; the rest of the app reads it
+// synchronously via getCachedSecret instead of calling the secret store again.
+LoadedSecrets startupSecrets = {secretValues: {}};
+
+// Fetches a batch of secrets from the secret store. Extracted as a function
+// type so tests can substitute a stub without a live secret store.
+type BatchSecretFetcher function (string[] secretIds) returns secretmanager:BatchGetSecretValueResponse|secretmanager:Error;
+
+function fetchSecretBatchFromStore(string[] secretIds) returns secretmanager:BatchGetSecretValueResponse|secretmanager:Error {
+    return secretManagerClient->batchGetSecretValue(secretIds = secretIds);
+}
+
 // Loads all named secrets required at startup in a single batch call.
 // - If the secret store rejects our credentials, fails fast with a clear
 //   authentication error.
 // - If one or more requested secrets do not exist, fails fast reporting
 //   exactly which named secrets are missing.
-function loadStartupSecrets(map<string> secretIdsByName) returns LoadedSecrets|error {
+function loadStartupSecrets(map<string> secretIdsByName, BatchSecretFetcher fetchSecretBatch = fetchSecretBatchFromStore) returns LoadedSecrets|error {
     string[] secretIds = secretIdsByName.toArray();
 
-    secretmanager:BatchGetSecretValueResponse|secretmanager:Error response =
-        secretManagerClient->batchGetSecretValue(secretIds = secretIds);
+    secretmanager:BatchGetSecretValueResponse|secretmanager:Error response = fetchSecretBatch(secretIds);
 
     if response is secretmanager:Error {
         return error(string `Can't authenticate to secret store: ${response.message()}`, response);
