@@ -18,8 +18,35 @@ public type EntitlementSummary record {|
     DimensionSummary[] dimensions;
 |};
 
-# Error response returned to ops when the entitlement sweep could not be completed.
+# Error response returned to ops when the entitlement sweep could not be completed or the request was invalid.
 public type ReportingErrorDetail record {
     # Name of the operation that failed.
     string operation;
+    # Human readable explanation of the failure.
+    string message?;
 };
+
+# A single entitlement coming up for renewal (or already expired), as shown on the watchlist.
+public type ExpiringEntitlement record {|
+    # Identifier of the customer holding the entitlement.
+    string customerIdentifier;
+    # The dimension the entitlement applies to.
+    string dimension;
+    # The entitled amount.
+    decimal amount;
+    # The RFC 3339 timestamp the entitlement expires at.
+    string expiryDate;
+|};
+
+# Expiry watchlist for a product: entitlements still live but expiring within the requested
+# window, and entitlements that have already expired, kept in their own separate bucket.
+public type ExpiryWatchlist record {|
+    # The AWS Marketplace product code the watchlist was computed for.
+    string productCode;
+    # The size of the lookahead window, in days, that was requested.
+    int windowDays;
+    # Entitlements expiring within the window, soonest first.
+    ExpiringEntitlement[] expiringSoon;
+    # Entitlements that have already expired, soonest-expired first, kept separate from `expiringSoon`.
+    ExpiringEntitlement[] alreadyExpired;
+|};

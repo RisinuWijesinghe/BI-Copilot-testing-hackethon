@@ -12,6 +12,9 @@ configurable string awsSecretAccessKey = ?;
 # Product codes this reporting service is allowed to report on.
 configurable string[] supportedProductCodes = ?;
 
+# Dimensions sold for the supported products. Used to validate caller-supplied dimension filters.
+configurable string[] supportedDimensions = ?;
+
 # Maximum number of entitlement records requested per page when sweeping AWS Marketplace.
 configurable int entitlementPageSize = 20;
 
