@@ -1,0 +1,3 @@
+[workspace]
+title = "AWS Marketplce MPE-Risinu"
+packages = ["seller_side_entitlement_reporting"]
