@@ -10,6 +10,7 @@ public type BatchSummary record {|
     int totalMessages;
     int processedCount;
     int rejectedCount;
+    int deadlineTimestamp;
 |};
 
 // Health-check response reporting runtime/invocation diagnostics.
