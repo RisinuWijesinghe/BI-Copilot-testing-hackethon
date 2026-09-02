@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "multi_team_usage_attribution_and_batch_reporting_service"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "Multi-team usage attribution and batch reporting service"
+
+[build-options]
+sticky = true
