@@ -1,5 +1,8 @@
 import ballerinax/aws.marketplace.mpm;
 
+# AWS Marketplace accepts at most this many usage records in a single batchMeterUsage request.
+const int MAX_USAGE_EVENTS_PER_BATCH = 25;
+
 # Submits a batch of usage records to AWS Marketplace in a single request.
 #
 # + usageRecords - The AWS Marketplace usage records to submit

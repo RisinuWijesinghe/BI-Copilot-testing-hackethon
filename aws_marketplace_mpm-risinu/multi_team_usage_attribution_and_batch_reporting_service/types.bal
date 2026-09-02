@@ -19,11 +19,37 @@ public type UsageBatchReportRequest record {|
     TeamUsageEvent[] usageEvents;
 |};
 
-# The response returned after a usage batch has been reported to AWS Marketplace.
+# The outcome of attempting to report a single usage event, matched back to the event as
+# submitted so finance can reconcile it against their own records.
+public type UsageEventOutcome record {|
+    # The customer's AWS account ID this outcome corresponds to
+    string customerAwsAccountId;
+    # The billing dimension (feature) this outcome corresponds to
+    string dimension;
+    # The amount of the dimension consumed
+    int quantity;
+    # When the usage was recorded as having occurred, as submitted
+    string usageTimestamp;
+    # The internal team that generated this usage, as submitted
+    string internalTeam;
+    # ACCEPTED, DUPLICATE, NOT_SUBSCRIBED, or UNPROCESSED
+    string outcomeStatus;
+    # A human-readable explanation of the outcome
+    string message;
+|};
+
+# The response returned after a usage batch has been reported to AWS Marketplace. Every
+# submitted event is accounted for here, matched back to its outcome.
 public type UsageBatchReportResponse record {|
-    # The number of usage events accepted by AWS Marketplace for billing
-    int acceptedCount;
-    # The total number of usage events submitted in the batch
-    int totalCount;
+    # The outcome of every usage event submitted in the batch
+    UsageEventOutcome[] eventOutcomes;
+|};
+
+# Returned when the request fails validation before anything is sent upstream.
+public type UsageValidationErrorDetails record {|
+    # A short, high-level description of the validation failure
+    string message;
+    # Further detail on the validation failure, such as the applicable limit
+    string details;
 |};
 
