@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "saas_entitlement_gate"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "SaaS entitlement gate"
+
+[build-options]
+sticky = true
