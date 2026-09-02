@@ -1,0 +1,3 @@
+[workspace]
+title = "AWS S3-Risinu"
+packages = ["sales_report_ingestion_api"]

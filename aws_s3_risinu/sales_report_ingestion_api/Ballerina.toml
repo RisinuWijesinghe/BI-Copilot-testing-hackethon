@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "sales_report_ingestion_api"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Sales report ingestion API"
+
+[build-options]
+sticky = true
