@@ -1,0 +1,3 @@
+[workspace]
+title = "AWS Marketplace MPM-Risinu"
+packages = ["saas_activation_and_usage_metering_service"]
