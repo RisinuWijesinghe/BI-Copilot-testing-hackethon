@@ -66,3 +66,14 @@ function resolveSecretName(map<string> secretIdsByName, string secretId) returns
     }
     return secretId;
 }
+
+// Synchronous read from the in-memory cache populated at startup. Since the
+// secrets were already loaded (and validated) before the app was considered
+// started, this never needs to contact the secret store again.
+public function getCachedSecret(string secretName) returns string|error {
+    string? secretValue = startupSecrets.secretValues[secretName];
+    if secretValue is () {
+        return error(string `No cached secret found for "${secretName}"`);
+    }
+    return secretValue;
+}
