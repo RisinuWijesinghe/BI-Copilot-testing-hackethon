@@ -1,30 +1,8 @@
-# Registration token supplied by a new customer after subscribing via AWS Marketplace.
-public type ActivationRequest record {|
-    # The registration token returned by AWS Marketplace on subscription
-    string registrationToken;
-|};
-
-# Customer identifying details resolved from a valid registration token, used to activate the account.
-public type CustomerActivationDetails record {|
-    # The AWS account identifier of the customer
-    string customerAwsAccountId;
-    # The unique customer identifier to associate with the activated account
-    string customerIdentifier;
-    # The AWS Marketplace product code the customer subscribed to
-    string productCode;
-|};
-
-# A clear, caller-facing error payload returned for invalid or expired registration tokens.
-public type ActivationErrorDetails record {|
-    string message;
-    string details;
-    string timestamp;
-|};
-
-# A single chunk of feature usage for an already-activated customer, reported by the billing job.
+# A single chunk of feature usage for a customer, identified directly by the AWS account ID
+# provided by sales when the deal closed, reported by the billing job.
 public type UsageReportItem record {|
-    # The customer identifier obtained during activation
-    string customerIdentifier;
+    # The customer's AWS account ID, as provided by sales
+    string customerAwsAccountId;
     # The billing dimension (feature) that was used
     string dimension;
     # The amount of the dimension consumed
@@ -41,8 +19,8 @@ public type UsageReportRequest record {|
 
 # The outcome of attempting to report a single usage item.
 public type UsageItemOutcome record {|
-    # The customer identifier this outcome corresponds to
-    string customerIdentifier;
+    # The customer's AWS account ID this outcome corresponds to
+    string customerAwsAccountId;
     # The billing dimension (feature) this outcome corresponds to
     string dimension;
     # The amount of the dimension consumed

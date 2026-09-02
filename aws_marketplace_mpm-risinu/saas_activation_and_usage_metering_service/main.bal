@@ -2,39 +2,12 @@ import ballerina/http;
 import ballerina/time;
 import ballerinax/aws.marketplace.mpm;
 
-service /activation on new http:Listener(8080) {
-
-    # Resolves an AWS Marketplace registration token into the customer's identifying details
-    # so the account can be activated.
-    #
-    # + request - The activation request containing the registration token issued by AWS Marketplace
-    # + return - The resolved customer details on success, or a clear 4xx error for an invalid/expired token
-    resource function post resolve(ActivationRequest request) returns CustomerActivationDetails|http:BadRequest {
-        mpm:ResolveCustomerResponse|mpm:Error response = marketplaceMeteringClient->resolveCustomer(request.registrationToken);
-
-        if response is mpm:Error {
-            ActivationErrorDetails errorDetails = {
-                message: "The registration token is invalid or has expired.",
-                details: "Ask the customer to restart the subscription process from AWS Marketplace to obtain a new registration token.",
-                timestamp: time:utcToString(time:utcNow())
-            };
-            return <http:BadRequest>{body: errorDetails};
-        }
-
-        CustomerActivationDetails customerActivationDetails = {
-            customerAwsAccountId: response.customerAWSAccountId,
-            customerIdentifier: response.customerIdentifier,
-            productCode: response.productCode
-        };
-        return customerActivationDetails;
-    }
-}
-
 service /billing on new http:Listener(8081) {
 
-    # Reports a batch of feature usage chunks for already-activated customers so they can be billed.
-    # Every submitted item is rejected up front if it fails validation, otherwise it is reported to
-    # AWS Marketplace and its outcome (accepted, duplicate, not subscribed, or unprocessed) is returned.
+    # Reports a batch of feature usage chunks for customers, identified directly by the AWS account ID
+    # provided by sales, so they can be billed. Every submitted item is rejected up front if it fails
+    # validation, otherwise it is reported to AWS Marketplace and its outcome (accepted, duplicate,
+    # not subscribed, or unprocessed) is returned.
     #
     # + request - The batch of usage items to report
     # + return - An outcome for every submitted item, or a 4xx error when the request fails validation
@@ -84,15 +57,12 @@ service /billing on new http:Listener(8081) {
         mpm:UsageRecord[] usageRecords = from UsageReportItem usageItem in usageItems
             select mapToUsageRecord(usageItem, resolveUsageTimestamp(usageItem));
 
-        mpm:BatchMeterUsageResponse|mpm:Error batchResponse = marketplaceMeteringClient->batchMeterUsage(
-            productCode = marketplaceProductCode,
-            usageRecords = usageRecords
-        );
+        mpm:BatchMeterUsageResponse|mpm:Error batchResponse = reportUsageBatch(usageRecords);
 
         if batchResponse is mpm:Error {
             UsageItemOutcome[] failedOutcomes = from UsageReportItem usageItem in usageItems
                 select {
-                    customerIdentifier: usageItem.customerIdentifier,
+                    customerAwsAccountId: usageItem.customerAwsAccountId,
                     dimension: usageItem.dimension,
                     quantity: usageItem.quantity,
                     usageTimestamp: usageItem.usageTimestamp ?: "",

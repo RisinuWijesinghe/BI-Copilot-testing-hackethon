@@ -7,7 +7,7 @@ import ballerinax/aws.marketplace.mpm;
 # + resolvedTimestamp - The UTC timestamp to record the usage against
 # + return - The AWS Marketplace usage record to submit
 function mapToUsageRecord(UsageReportItem usageReportItem, time:Utc resolvedTimestamp) returns mpm:UsageRecord => {
-    customerIdentifier: usageReportItem.customerIdentifier,
+    customerAWSAccountId: usageReportItem.customerAwsAccountId,
     dimension: usageReportItem.dimension,
     quantity: usageReportItem.quantity,
     timestamp: resolvedTimestamp
@@ -63,14 +63,14 @@ function mapToProcessedOutcome(mpm:UsageRecordResult usageRecordResult) returns 
     mpm:UsageRecord? usageRecord = usageRecordResult.usageRecord;
     mpm:UsageRecordStatus? usageRecordStatus = usageRecordResult.status;
 
-    string customerIdentifier = "";
+    string customerAwsAccountId = "";
     string dimension = "";
     int quantity = 0;
     string usageTimestamp = "";
     if usageRecord is mpm:UsageRecord {
-        string? recordCustomerIdentifier = usageRecord.customerIdentifier;
-        if recordCustomerIdentifier is string {
-            customerIdentifier = recordCustomerIdentifier;
+        string? recordCustomerAwsAccountId = usageRecord.customerAWSAccountId;
+        if recordCustomerAwsAccountId is string {
+            customerAwsAccountId = recordCustomerAwsAccountId;
         }
         dimension = usageRecord.dimension;
         int? recordQuantity = usageRecord.quantity;
@@ -88,7 +88,7 @@ function mapToProcessedOutcome(mpm:UsageRecordResult usageRecordResult) returns 
     }
 
     return {
-        customerIdentifier,
+        customerAwsAccountId,
         dimension,
         quantity,
         usageTimestamp,
@@ -103,10 +103,10 @@ function mapToProcessedOutcome(mpm:UsageRecordResult usageRecordResult) returns 
 # + usageRecord - The unprocessed usage record returned by AWS Marketplace
 # + return - The caller-facing outcome for the corresponding usage item
 function mapToUnprocessedOutcome(mpm:UsageRecord usageRecord) returns UsageItemOutcome {
-    string customerIdentifier = "";
-    string? recordCustomerIdentifier = usageRecord.customerIdentifier;
-    if recordCustomerIdentifier is string {
-        customerIdentifier = recordCustomerIdentifier;
+    string customerAwsAccountId = "";
+    string? recordCustomerAwsAccountId = usageRecord.customerAWSAccountId;
+    if recordCustomerAwsAccountId is string {
+        customerAwsAccountId = recordCustomerAwsAccountId;
     }
     int quantity = 0;
     int? recordQuantity = usageRecord.quantity;
@@ -115,7 +115,7 @@ function mapToUnprocessedOutcome(mpm:UsageRecord usageRecord) returns UsageItemO
     }
 
     return {
-        customerIdentifier,
+        customerAwsAccountId,
         dimension: usageRecord.dimension,
         quantity,
         usageTimestamp: time:utcToString(usageRecord.timestamp),
