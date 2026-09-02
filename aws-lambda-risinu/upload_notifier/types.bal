@@ -1,13 +1,18 @@
 // Summary returned after processing an S3 upload notification event.
 public type UploadSummary record {|
     int totalObjectsProcessed;
+    int processedCount;
+    int rejectedCount;
 |};
 
 // Simple health status payload returned by the API Gateway health check
 // endpoint so a monitoring tool can poll to confirm the deployment is alive.
+// The handlerId field echoes back the environment or instance identifier
+// that served the request when the caller supplies one.
 public type HealthStatus record {|
     string status;
     string message;
+    string handlerId?;
 |};
 
 // Clean, user-facing error payload returned instead of an internal failure

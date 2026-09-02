@@ -23,6 +23,7 @@ public function healthCheck(lambda:Context ctx, lambda:APIGatewayProxyRequest re
         ProxyResponse errorProxyResponse = buildMalformedRequestResponse();
         return errorProxyResponse.toJson();
     }
-    ProxyResponse healthProxyResponse = buildHealthCheckResponse();
+    string? handlerId = extractHandlerId(request);
+    ProxyResponse healthProxyResponse = buildHealthCheckResponse(handlerId);
     return healthProxyResponse.toJson();
 }
