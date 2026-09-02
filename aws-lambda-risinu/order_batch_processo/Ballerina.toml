@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "order_batch_processo"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Order batch processo"
+
+[build-options]
+sticky = true

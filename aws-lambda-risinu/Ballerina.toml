@@ -1,0 +1,3 @@
+[workspace]
+title = "AWS Lambda-Risinu"
+packages = ["order_batch_processo"]
