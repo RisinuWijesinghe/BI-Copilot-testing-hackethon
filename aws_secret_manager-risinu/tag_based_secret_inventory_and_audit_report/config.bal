@@ -13,3 +13,7 @@ configurable string webIdentityTokenFile = ?;
 configurable string teamTagKey = "team";
 configurable string teamTagValue = ?;
 
+// Rotation policy: a secret that has rotation enabled but hasn't rotated
+// within this many days is flagged as overdue.
+configurable int rotationPolicyMaxAgeDays = 90;
+
