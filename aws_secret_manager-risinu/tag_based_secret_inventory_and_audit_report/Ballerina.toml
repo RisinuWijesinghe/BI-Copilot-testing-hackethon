@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "tag_based_secret_inventory_and_audit_report"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "Tag-based secret inventory and audit report"
+
+[build-options]
+sticky = true

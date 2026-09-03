@@ -1,3 +1,3 @@
 [workspace]
 title = "AWS Secret Manager-Risinu"
-packages = ["multi_secret_config_loader_with_swappable_auth", "database_credential_lookup_with_rotation_fallback"]
+packages = ["multi_secret_config_loader_with_swappable_auth", "database_credential_lookup_with_rotation_fallback", "tag_based_secret_inventory_and_audit_report"]
