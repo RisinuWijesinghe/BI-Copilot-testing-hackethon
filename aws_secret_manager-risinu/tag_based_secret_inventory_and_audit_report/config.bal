@@ -8,10 +8,10 @@ configurable string awsRegion = "us-east-1";
 configurable string webIdentityRoleArn = ?;
 configurable string webIdentityTokenFile = ?;
 
-// The tag key/value pair that identifies which team a secret belongs to,
-// e.g. tagKey = "team", tagValue = "payments".
-configurable string teamTagKey = "team";
-configurable string teamTagValue = ?;
+// The fixed list of secret names/IDs to audit, handed to us explicitly by
+// compliance. Tag-based discovery was dropped since tagging conventions
+// turned out to be inconsistent across teams.
+configurable string[] auditedSecretIds = ?;
 
 // Rotation policy: a secret that has rotation enabled but hasn't rotated
 // within this many days is flagged as overdue.

@@ -2,19 +2,19 @@ import ballerina/io;
 import ballerina/time;
 
 public function main() {
-    ClassifiedSecretAuditEntry[]|error auditEntries = buildTeamAuditReport();
+    ClassifiedSecretAuditEntry[]|error auditEntries = buildAuditReport();
 
     if auditEntries is error {
         io:println(string `Failed to generate secret compliance report: could not read from the secret store (check credentials and connectivity). Details: ${auditEntries.message()}`);
         return;
     }
 
-    io:println(string `Secret compliance report for team "${teamTagValue}"`);
-    io:println(string `Total secrets found: ${auditEntries.length()}`);
+    io:println("Secret compliance report");
+    io:println(string `Total secrets audited: ${auditEntries.length()}`);
     io:println("----------------------------------------------------------------");
 
     if auditEntries.length() == 0 {
-        io:println("No secrets are tagged for this team.");
+        io:println("No secret IDs were configured for audit.");
         return;
     }
 
