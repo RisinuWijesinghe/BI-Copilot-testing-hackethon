@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "product_catalog_loader_and_browse"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "Product catalog loader and browse"
+
+[build-options]
+sticky = true
