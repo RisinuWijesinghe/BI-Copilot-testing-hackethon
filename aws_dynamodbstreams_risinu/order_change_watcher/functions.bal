@@ -3,12 +3,17 @@ import ballerina/time;
 import ballerinax/aws.dynamodb;
 import ballerinax/aws.dynamodbstreams;
 
+// A record that carries no event identifier is not expected in practice, but stats tracking still needs a
+// stand-in value in that case rather than failing.
+const string UNKNOWN_EVENT_ID = "unknown";
+
 # Looks up the latest change feed (stream) ARN for the Orders table, if one is currently enabled.
 #
 # + tableName - name of the table to inspect
 # + return - the stream ARN if a change feed is enabled, `()` if the table has no change feed enabled, or an
 # error if AWS could not be reached
 function resolveOrdersStreamArn(string tableName) returns string?|error {
+    dynamodb:Client dynamoDbClient = check getDynamoDbClient();
     dynamodb:TableDescription tableDescription = check dynamoDbClient->describeTable(tableName);
     dynamodb:StreamSpecification? streamSpecification = tableDescription?.StreamSpecification;
     if streamSpecification is () || !streamSpecification.StreamEnabled {
@@ -27,6 +32,7 @@ function resolveOrdersStreamArn(string tableName) returns string?|error {
 # + streamArn - the change feed identifier (stream ARN)
 # + return - the complete shard listing, or an error if AWS could not be reached
 function listAllShards(string streamArn) returns dynamodbstreams:Shard[]|error {
+    dynamodbstreams:Client dynamoDbStreamsClient = check getDynamoDbStreamsClient();
     dynamodbstreams:Shard[] allShards = [];
     string? exclusiveStartShardId = ();
     boolean hasMorePages = true;
@@ -53,17 +59,18 @@ function listAllShards(string streamArn) returns dynamodbstreams:Shard[]|error {
     return allShards;
 }
 
-# Obtains a shard iterator positioned at the oldest retained record, so that everything still available in the
-# feed is picked up rather than only what happens from now on.
+# Obtains a shard iterator positioned after the newest record already on the shard, so that only changes
+# happening from this moment onwards are reported - this is a long-running service, not a backfill.
 #
 # + streamArn - the change feed identifier (stream ARN)
 # + shardId - the shard to obtain a read position for
 # + return - the shard iterator, or an error if AWS could not be reached
-function openShardFromTrimHorizon(string streamArn, string shardId) returns string|error {
+function openShardFromLatest(string streamArn, string shardId) returns string|error {
+    dynamodbstreams:Client dynamoDbStreamsClient = check getDynamoDbStreamsClient();
     return dynamoDbStreamsClient->getShardIterator({
         streamArn,
         shardId,
-        shardIteratorType: dynamodbstreams:TRIM_HORIZON
+        shardIteratorType: dynamodbstreams:LATEST
     });
 }
 
@@ -81,20 +88,6 @@ function extractStringAttribute(map<dynamodbstreams:AttributeValue>? image, stri
         return ();
     }
     return attributeValue?.s;
-}
-
-# Decides whether a REMOVE record was caused by the table's own time-to-live expiry, as opposed to someone
-# deleting the order directly. DynamoDB marks TTL-driven deletes with a service identity on the record.
-#
-# + userIdentity - the identity attached to the change record, present only on TTL-driven deletes
-# + return - true if this removal was driven by time-to-live expiry
-function isTtlExpiry(dynamodbstreams:Identity? userIdentity) returns boolean {
-    if userIdentity is () {
-        return false;
-    }
-    string? principalId = userIdentity.principalId;
-    string? identityType = userIdentity?.'type;
-    return principalId == TTL_PRINCIPAL_ID && identityType == TTL_IDENTITY_TYPE;
 }
 
 # Recognizes statuses used by internal tests, so they can be kept out of the running picture.
@@ -155,11 +148,10 @@ function narrateChangeRecord(dynamodbstreams:Record changeRecord) returns OrderC
                         previousStatus = previousStatus);
                 return ();
             }
-            OrderChangeKind kind = isTtlExpiry(changeRecord.userIdentity) ? ORDER_EXPIRED : ORDER_DELETED;
             if previousStatus is () {
-                return {kind, orderId};
+                return {kind: ORDER_REMOVED, orderId};
             }
-            return {kind, orderId, previousStatus};
+            return {kind: ORDER_REMOVED, orderId, previousStatus};
         }
         _ => {
             return ();
@@ -180,17 +172,11 @@ function renderNarration(OrderChangeNarration narration) returns string {
         ORDER_STATUS_CHANGED => {
             return string `Order ${orderId} moved from ${narration?.previousStatus ?: "unknown"} to ${narration?.newStatus ?: "unknown"}`;
         }
-        ORDER_EXPIRED => {
+        ORDER_REMOVED => {
             string? previousStatus = narration?.previousStatus;
             return previousStatus is string
-                ? string `Order ${orderId} expired via time-to-live (was ${previousStatus})`
-                : string `Order ${orderId} expired via time-to-live`;
-        }
-        ORDER_DELETED => {
-            string? previousStatus = narration?.previousStatus;
-            return previousStatus is string
-                ? string `Order ${orderId} was deleted (was ${previousStatus})`
-                : string `Order ${orderId} was deleted`;
+                ? string `Order ${orderId} is gone (was ${previousStatus})`
+                : string `Order ${orderId} is gone`;
         }
     }
     return string `Order ${orderId} changed`;
@@ -199,10 +185,12 @@ function renderNarration(OrderChangeNarration narration) returns string {
 # Reads whatever records are currently available at a shard's iterator and narrates each one, warning about
 # and skipping any record that is missing the attributes the watcher needs instead of treating it as fatal.
 #
+# + shardId - the shard the iterator belongs to, recorded against each change handled from it
 # + shardIterator - the shard iterator to read from
 # + return - the next shard iterator to continue reading from (absent once the shard is exhausted) together
 # with the number of records that were read, or an error if AWS could not be reached
-function pollShardOnce(string shardIterator) returns [string?, int]|error {
+function pollShardOnce(string shardId, string shardIterator) returns [string?, int]|error {
+    dynamodbstreams:Client dynamoDbStreamsClient = check getDynamoDbStreamsClient();
     dynamodbstreams:GetRecordsOutput result = check dynamoDbStreamsClient->getRecords({shardIterator});
     dynamodbstreams:Record[]? records = result.records;
     if records is dynamodbstreams:Record[] {
@@ -215,7 +203,8 @@ function pollShardOnce(string shardIterator) returns [string?, int]|error {
             }
             string line = renderNarration(narration);
             log:printInfo(line);
-            watcherStats.recordChange(narration);
+            string eventId = changeRecord?.eventID ?: UNKNOWN_EVENT_ID;
+            watcherStats.recordChange(narration, shardId, eventId);
         }
         return [result.nextShardIterator, records.length()];
     }
