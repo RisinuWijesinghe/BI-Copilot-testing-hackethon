@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "change_feed_inventory_api"
+version = "0.1.0"
+distribution = "2201.13.5"
+title = "Change feed inventory API"
+
+[build-options]
+sticky = true

@@ -1,0 +1,3 @@
+[workspace]
+title = "AWS Dynamodbstreams-Risinu"
+packages = ["change_feed_inventory_api"]
