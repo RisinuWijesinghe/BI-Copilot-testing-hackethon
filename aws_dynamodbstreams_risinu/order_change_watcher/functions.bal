@@ -97,6 +97,14 @@ function isTtlExpiry(dynamodbstreams:Identity? userIdentity) returns boolean {
     return principalId == TTL_PRINCIPAL_ID && identityType == TTL_IDENTITY_TYPE;
 }
 
+# Recognizes statuses used by internal tests, so they can be kept out of the running picture.
+#
+# + status - the status value to check
+# + return - true if this status is an internal test marker
+function isTestStatus(string status) returns boolean {
+    return status.startsWith(TEST_STATUS_PREFIX);
+}
+
 # Narrates a single change record into a ready-to-print description of what happened to an order.
 # A record that is missing the attributes the watcher needs is not a fatal error - it is reported as a
 # warning by the caller and simply skipped.
@@ -121,6 +129,10 @@ function narrateChangeRecord(dynamodbstreams:Record changeRecord) returns OrderC
             if newStatus is () {
                 return ();
             }
+            if isTestStatus(newStatus) {
+                log:printDebug("skipping order with an internal test status marker", orderId = orderId, status = newStatus);
+                return ();
+            }
             return {kind: ORDER_PLACED, orderId, newStatus};
         }
         dynamodbstreams:MODIFY => {
@@ -129,10 +141,20 @@ function narrateChangeRecord(dynamodbstreams:Record changeRecord) returns OrderC
             if previousStatus is () || newStatus is () {
                 return ();
             }
+            if isTestStatus(previousStatus) || isTestStatus(newStatus) {
+                log:printDebug("skipping order with an internal test status marker", orderId = orderId,
+                        previousStatus = previousStatus, newStatus = newStatus);
+                return ();
+            }
             return {kind: ORDER_STATUS_CHANGED, orderId, previousStatus, newStatus};
         }
         dynamodbstreams:REMOVE => {
             string? previousStatus = extractStringAttribute(streamRecord.oldImage, STATUS_ATTRIBUTE);
+            if previousStatus is string && isTestStatus(previousStatus) {
+                log:printDebug("skipping order with an internal test status marker", orderId = orderId,
+                        previousStatus = previousStatus);
+                return ();
+            }
             OrderChangeKind kind = isTtlExpiry(changeRecord.userIdentity) ? ORDER_EXPIRED : ORDER_DELETED;
             if previousStatus is () {
                 return {kind, orderId};
@@ -193,6 +215,7 @@ function pollShardOnce(string shardIterator) returns [string?, int]|error {
             }
             string line = renderNarration(narration);
             log:printInfo(line);
+            watcherStats.recordChange(narration);
         }
         return [result.nextShardIterator, records.length()];
     }
