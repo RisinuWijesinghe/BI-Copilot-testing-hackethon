@@ -15,3 +15,10 @@ configurable decimal idleTimeoutSeconds = 30;
 
 // How long to wait between polls of a shard that had nothing to report.
 configurable decimal pollIntervalSeconds = 2;
+
+// How often to re-check the feed's shard topology for newly created shards, so a reshard (a shard closing and
+// being replaced by new ones) is picked up instead of the watcher just going quiet.
+configurable decimal shardDiscoveryIntervalSeconds = 15;
+
+// Port the watcher's running-stats HTTP endpoint listens on.
+configurable int statsServicePort = 8080;
