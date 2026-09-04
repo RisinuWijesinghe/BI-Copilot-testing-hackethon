@@ -3,6 +3,12 @@ import ballerina/log;
 
 listener http:Listener catalogListener = new (servicePort);
 
+function init() returns error? {
+    // The service must not start serving category reads until the category index is confirmed
+    // usable — creating it first if it isn't there yet.
+    check ensureCategoryIndexReady();
+}
+
 service /catalog on catalogListener {
 
     // Loads a batch of products into the catalog in one go. Every product in the request is
@@ -40,25 +46,23 @@ service /catalog on catalogListener {
         return <ProductBatchLoadAccepted>{loadedCount: validatedProducts.length()};
     }
 
-    // Returns the requested products in one round trip. SKUs that don't exist are not an
-    // error — they come back with found = false so the caller can tell exactly which of the
-    // requested SKUs were present.
-    resource function get products(string[] sku) returns ProductBatchLookupResponse|http:BadRequest|http:BadGateway {
-        if sku.length() == 0 {
-            return <http:BadRequest>{
-                body: {message: "At least one sku must be provided"}
-            };
-        }
-
-        ProductBatchLookupResponse|error lookupResult = lookupProducts(sku);
+    // Returns a single product by SKU. A SKU that doesn't exist is a 404, not a silent empty
+    // result — the tooling calling this asks for one product at a time and needs to know
+    // definitively whether it exists.
+    resource function get products/[string sku]() returns Product|http:NotFound|http:BadGateway {
+        Product?|error lookupResult = getProduct(sku);
         if lookupResult is error {
-            log:printError("Failed to look up products in DynamoDB", lookupResult,
-                    tableName = catalogTableName, skuCount = sku.length());
+            log:printError("Failed to look up product in DynamoDB", lookupResult,
+                    tableName = catalogTableName, sku = sku);
             return <http:BadGateway>{
                 body: {message: "Unable to reach the catalog storage right now. Please try again later."}
             };
         }
-
+        if lookupResult is () {
+            return <http:NotFound>{
+                body: {message: "No product found for the given sku"}
+            };
+        }
         return lookupResult;
     }
 

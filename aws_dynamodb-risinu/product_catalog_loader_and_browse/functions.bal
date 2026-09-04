@@ -1,5 +1,6 @@
 import ballerina/lang.array;
 import ballerina/lang.runtime;
+import ballerina/log;
 import ballerinax/aws.dynamodb;
 
 const string SKU_ATTR = "Sku";
@@ -12,6 +13,125 @@ const int DYNAMODB_BATCH_LIMIT = 25;
 
 // Maximum attempts to retry any items DynamoDB reports back as unprocessed.
 const int MAX_UNPROCESSED_RETRIES = 5;
+
+// Finds the category index's description among a table's global secondary indexes, if it
+// currently has one by that name.
+function findCategoryIndex(dynamodb:TableDescription description) returns dynamodb:GlobalSecondaryIndexDescription? {
+    dynamodb:GlobalSecondaryIndexDescription[]? indexes = description?.GlobalSecondaryIndexes;
+    if indexes is () {
+        return ();
+    }
+    foreach dynamodb:GlobalSecondaryIndexDescription index in indexes {
+        if index?.IndexName == catalogCategoryIndexName {
+            return index;
+        }
+    }
+    return ();
+}
+
+// True once the index has finished building and is serving queries. Compared as text rather
+// than against a specific enum member, since DynamoDB reports index status separately from
+// table status and only ever as one of "CREATING", "UPDATING", "DELETING", or "ACTIVE".
+function isIndexActive(dynamodb:GlobalSecondaryIndexDescription index) returns boolean {
+    return index?.IndexStatus.toString() == "ACTIVE";
+}
+
+// Makes sure the category index exists and is ready to serve queries before the service starts
+// accepting traffic, creating it on the already-existing table if it is missing. The table
+// itself is provisioned externally and is never created here — only the index that category
+// browsing and the category summary depend on.
+//
+// This is what keeps both of those reads scoped to the category they're asked about: without
+// the index, the only way to group products by category is to walk the entire table.
+function ensureCategoryIndexReady() returns error? {
+    dynamodb:TableDescription|dynamodb:Error description = dynamoDbClient->describeTable(catalogTableName);
+    if description is dynamodb:Error {
+        log:printError("Catalog table could not be described; refusing to start",
+                description, tableName = catalogTableName);
+        return error("Catalog table is not accessible; the service will not start");
+    }
+
+    dynamodb:GlobalSecondaryIndexDescription? existingIndex = findCategoryIndex(description);
+    if existingIndex is () {
+        log:printInfo("Category index not found; creating it",
+                tableName = catalogTableName, indexName = catalogCategoryIndexName);
+        check createCategoryIndex(description);
+    } else if isIndexActive(existingIndex) {
+        log:printInfo("Category index is ready", tableName = catalogTableName,
+                indexName = catalogCategoryIndexName);
+        return ();
+    }
+
+    check waitForCategoryIndexActive();
+}
+
+// Issues the UpdateTable call that adds the category index to the table. Category and Price
+// are not part of the table's own key, so they are declared as attributes here; Name is
+// projected into the index so a category listing can be served entirely from it.
+function createCategoryIndex(dynamodb:TableDescription tableDescription) returns error? {
+    dynamodb:AttributeDefinition[] keyAttributeDefinitions = [
+        {AttributeName: CATEGORY_ATTR, AttributeType: dynamodb:S},
+        {AttributeName: PRICE_ATTR, AttributeType: dynamodb:N}
+    ];
+
+    dynamodb:CreateGlobalSecondaryIndexAction createAction = {
+        IndexName: catalogCategoryIndexName,
+        KeySchema: [
+            {AttributeName: CATEGORY_ATTR, KeyType: dynamodb:HASH},
+            {AttributeName: PRICE_ATTR, KeyType: dynamodb:RANGE}
+        ],
+        Projection: {ProjectionType: "INCLUDE", NonKeyAttributes: [NAME_ATTR]}
+    };
+
+    // A provisioned-throughput table needs the new index's own throughput specified; an
+    // on-demand table (the common case) does not use this field at all.
+    dynamodb:BillingMode? billingMode = tableDescription?.BillingModeSummary?.BillingMode;
+    if billingMode == dynamodb:PROVISIONED {
+        createAction.ProvisionedThroughput = {
+            ReadCapacityUnits: INDEX_READ_CAPACITY_UNITS,
+            WriteCapacityUnits: INDEX_WRITE_CAPACITY_UNITS
+        };
+    }
+
+    dynamodb:TableDescription|dynamodb:Error updateResult = dynamoDbClient->updateTable({
+        TableName: catalogTableName,
+        AttributeDefinitions: keyAttributeDefinitions,
+        GlobalSecondaryIndexUpdates: [{Create: createAction}]
+    });
+    if updateResult is dynamodb:Error {
+        log:printError("Failed to create the category index; refusing to start",
+                updateResult, tableName = catalogTableName, indexName = catalogCategoryIndexName);
+        return error("Category index could not be created; the service will not start");
+    }
+}
+
+// Polls the table description until the category index reports ACTIVE, so the service never
+// starts serving category reads against an index that isn't actually usable yet.
+function waitForCategoryIndexActive() returns error? {
+    decimal waited = 0d;
+    while waited < INDEX_READY_MAX_WAIT_SECONDS {
+        dynamodb:TableDescription|dynamodb:Error description = dynamoDbClient->describeTable(catalogTableName);
+        if description is dynamodb:Error {
+            log:printError("Catalog table could not be described while waiting for the category index",
+                    description, tableName = catalogTableName);
+            return error("Catalog table is not accessible; the service will not start");
+        }
+
+        dynamodb:GlobalSecondaryIndexDescription? index = findCategoryIndex(description);
+        if index is dynamodb:GlobalSecondaryIndexDescription && isIndexActive(index) {
+            log:printInfo("Category index is ready", tableName = catalogTableName,
+                    indexName = catalogCategoryIndexName);
+            return ();
+        }
+
+        runtime:sleep(INDEX_READY_POLL_INTERVAL_SECONDS);
+        waited += INDEX_READY_POLL_INTERVAL_SECONDS;
+    }
+
+    log:printError("Category index did not become ready in time; refusing to start",
+            tableName = catalogTableName, indexName = catalogCategoryIndexName);
+    return error("Category index is not ready; the service will not start");
+}
 
 // Validates a single raw product and converts it into a Product ready to write. Returns an
 // InvalidProductDetail naming the offending product (by SKU, when it has one) if the SKU is
@@ -129,34 +249,19 @@ function loadProducts(Product[] products) returns error? {
     }
 }
 
-// Looks up a handful of SKUs in one round trip, reporting which of them were found.
-function lookupProducts(string[] skus) returns ProductBatchLookupResponse|error {
-    map<dynamodb:AttributeValue>[] keys = from string sku in skus
-        select {[SKU_ATTR]: {S: sku}};
+// Looks up a single product by SKU. Returns () when there is no product under that SKU, which
+// the caller turns into a 404 rather than treating as an error.
+function getProduct(string sku) returns Product?|error {
+    dynamodb:ItemGetOutput result = check dynamoDbClient->getItem({
+        TableName: catalogTableName,
+        Key: {[SKU_ATTR]: {S: sku}}
+    });
 
-    dynamodb:BatchItemGetInput getInput = {
-        RequestItems: {
-            [catalogTableName]: {Keys: keys}
-        }
-    };
-
-    map<Product> foundBySku = {};
-    stream<dynamodb:BatchItem, dynamodb:Error?> items = check dynamoDbClient->getBatchItems(getInput);
-    check from dynamodb:BatchItem batchItem in items
-        do {
-            map<dynamodb:AttributeValue> item = check batchItem?.Item.ensureType();
-            Product product = check fromItem(item);
-            foundBySku[product.sku] = product;
-        };
-
-    ProductLookupResult[] results = from string sku in skus
-        select {
-            sku,
-            product: foundBySku[sku],
-            found: foundBySku.hasKey(sku)
-        };
-
-    return {results};
+    map<dynamodb:AttributeValue>? item = result?.Item;
+    if item is () {
+        return ();
+    }
+    return check fromItem(item);
 }
 
 // Encodes a page position into an opaque cursor. Base64url without padding, so the value the

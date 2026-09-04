@@ -39,18 +39,6 @@ public type InvalidProductBatch record {|
     InvalidProductDetail invalidProduct;
 |};
 
-// Response for a single product lookup by SKU.
-public type ProductLookupResult record {|
-    string sku;
-    Product? product;
-    boolean found;
-|};
-
-// Response body for the multi-SKU lookup call.
-public type ProductBatchLookupResponse record {|
-    ProductLookupResult[] results;
-|};
-
 // A product as returned by a category listing. These responses get large, so only the three
 // fields a browsing caller needs are sent back rather than the whole stored record.
 public type ProductSummary record {|

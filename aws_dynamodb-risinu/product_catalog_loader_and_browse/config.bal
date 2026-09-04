@@ -18,3 +18,13 @@ configurable string catalogCategoryIndexName = "Category-Price-index";
 // and the ceiling it may ask for.
 const int DEFAULT_PAGE_SIZE = 50;
 const int MAX_PAGE_SIZE = 200;
+
+// Read/write capacity given to the category index if it has to be created on a table billed in
+// PROVISIONED mode. Unused when the table is PAY_PER_REQUEST, which is the common case.
+const int INDEX_READ_CAPACITY_UNITS = 5;
+const int INDEX_WRITE_CAPACITY_UNITS = 5;
+
+// How often to re-check whether the category index has finished being created, and the longest
+// startup will wait for it before giving up.
+const decimal INDEX_READY_POLL_INTERVAL_SECONDS = 3;
+const decimal INDEX_READY_MAX_WAIT_SECONDS = 300;
