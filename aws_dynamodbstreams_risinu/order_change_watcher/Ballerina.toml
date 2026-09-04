@@ -1,0 +1,9 @@
+[package]
+org = "risinutest"
+name = "order_change_watcher"
+version = "0.1.0"
+distribution = "2201.13.0"
+title = "Order change watcher"
+
+[build-options]
+sticky = true
