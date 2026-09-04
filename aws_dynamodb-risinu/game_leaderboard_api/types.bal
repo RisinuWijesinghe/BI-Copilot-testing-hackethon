@@ -32,6 +32,38 @@ public type Leaderboard record {|
     LeaderboardEntry[] scores;
 |};
 
+// Response for a single player's standing in a game.
+public type PlayerStanding record {|
+    string gameId;
+    string playerName;
+    decimal score;
+|};
+
+// Request payload for changing a player's display name.
+public type RenameRequest record {|
+    string newPlayerName;
+|};
+
+// Response for a successful display name change, including the previous name.
+public type NameChanged record {|
+    string gameId;
+    string previousPlayerName;
+    string newPlayerName;
+    decimal score;
+|};
+
+// Response for a successful removal, including what was stored before deletion.
+public type PlayerRemoved record {|
+    string gameId;
+    string playerName;
+    decimal score;
+|};
+
+// Response body listing the leaderboard tables visible in this account.
+public type TableList record {|
+    string[] tableNames;
+|};
+
 // Generic error message body.
 public type ErrorDetail record {|
     string message;
