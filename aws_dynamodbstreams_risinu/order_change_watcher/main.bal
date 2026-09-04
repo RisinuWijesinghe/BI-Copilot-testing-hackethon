@@ -2,30 +2,21 @@ import ballerina/lang.runtime;
 import ballerina/log;
 import ballerinax/aws.dynamodbstreams;
 
-// Tracks the read position and liveness of a single shard while the watcher is running.
+// Tracks the read position of a single shard while the watcher is running.
 type ShardCursor record {|
     string shardId;
     string? shardIterator;
 |};
 
 public function main() returns error? {
-    error? watchResult = watchOrdersChangeFeed();
-
-    // The stats endpoint exists to be curled while the watcher is running. Once the watcher itself has
-    // finished - whether because the feed went quiet or because there was nothing to watch - the process
-    // should actually exit rather than the listener keeping it alive indefinitely.
-    error? stopResult = statsHttpListener.gracefulStop();
-    if stopResult is error {
-        log:printWarn("failed to stop the stats endpoint listener cleanly", stopResult);
-    }
-
-    return watchResult;
+    return watchOrdersChangeFeed();
 }
 
-# Runs the watcher loop to completion: resolves the change feed, reads every shard (picking up replacements
-# created by reshards along the way), and returns once the feed has been quiet for the configured timeout.
+# Runs the watcher loop forever: resolves the change feed and reads every shard, picking up replacements
+# created by reshards along the way. This is a long-running service - it only reports changes that happen
+# from the moment it starts, and keeps running until it is stopped from the outside.
 #
-# + return - `()` once the watcher has finished, or an error if AWS could not be reached
+# + return - an error if AWS could not be reached while setting up
 function watchOrdersChangeFeed() returns error? {
     string? streamArn = check resolveOrdersStreamArn(ordersTableName);
     if streamArn is () {
@@ -44,7 +35,6 @@ function watchOrdersChangeFeed() returns error? {
         return;
     }
 
-    decimal lastActivityAt = nowInSeconds();
     decimal lastShardDiscoveryAt = nowInSeconds();
     while true {
         boolean recordsSeenThisSweep = false;
@@ -55,7 +45,7 @@ function watchOrdersChangeFeed() returns error? {
                 continue;
             }
 
-            [string?, int]|error pollResult = pollShardOnce(shardIterator);
+            [string?, int]|error pollResult = pollShardOnce(cursor.shardId, shardIterator);
             if pollResult is error {
                 log:printWarn("could not read from shard, will retry on the next sweep",
                         shardId = cursor.shardId);
@@ -73,8 +63,8 @@ function watchOrdersChangeFeed() returns error? {
         decimal currentTime = nowInSeconds();
 
         // The feed re-partitions as the table's traffic shifts: shards close and are replaced by new ones.
-        // Re-checking the topology periodically, rather than only when every known shard has gone quiet,
-        // means a reshard is picked up promptly instead of the watcher appearing to just go quiet.
+        // Re-checking the topology periodically means a reshard is picked up promptly instead of the watcher
+        // appearing to just go quiet.
         if currentTime - lastShardDiscoveryAt >= shardDiscoveryIntervalSeconds {
             int|error newShardCount = discoverAndOpenNewShards(streamArn, cursors, knownShardIds);
             lastShardDiscoveryAt = currentTime;
@@ -86,22 +76,15 @@ function watchOrdersChangeFeed() returns error? {
             }
         }
 
-        if recordsSeenThisSweep {
-            lastActivityAt = currentTime;
-        } else if currentTime - lastActivityAt >= idleTimeoutSeconds {
-            log:printInfo(string `the feed has been quiet for ${idleTimeoutSeconds} seconds - finishing`);
-            return;
-        }
-
         if !recordsSeenThisSweep {
             runtime:sleep(pollIntervalSeconds);
         }
     }
 }
 
-# Looks up the feed's current shard topology and opens a read position, from the start of what is still
-# retained, for every shard not already being tracked. This is how both the initial set of shards and any
-# replacements created by a later reshard are picked up.
+# Looks up the feed's current shard topology and opens a read position, from this point onwards, for every
+# shard not already being tracked. This is how both the initial set of shards and any replacements created by
+# a later reshard are picked up.
 #
 # + streamArn - the change feed identifier (stream ARN)
 # + cursors - the read positions being tracked so far; newly opened shards are appended to this list
@@ -118,10 +101,9 @@ function discoverAndOpenNewShards(string streamArn, ShardCursor[] cursors, map<b
         }
         knownShardIds[shardId] = true;
 
-        string|error shardIterator = openShardFromTrimHorizon(streamArn, shardId);
+        string|error shardIterator = openShardFromLatest(streamArn, shardId);
         if shardIterator is error {
-            log:printWarn("could not open shard from the start of the retained feed, skipping it",
-                    shardId = shardId);
+            log:printWarn("could not open shard for reading, skipping it", shardId = shardId);
             continue;
         }
         cursors.push({shardId, shardIterator});

@@ -1,7 +1,5 @@
 import ballerina/http;
 
-// Declared as a named listener, rather than inline, so that `main` can explicitly shut it down once the
-// watcher loop finishes - otherwise the listener would keep the whole process alive indefinitely.
 listener http:Listener statsHttpListener = new (statsServicePort);
 
 // Exposes the watcher's running picture while it is watching the feed. Declared at module level so it starts
