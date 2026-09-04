@@ -61,4 +61,75 @@ service /catalog on catalogListener {
 
         return lookupResult;
     }
+
+    // Returns the products in a category, cheapest first, optionally capped at a maximum price.
+    // Only SKU, name and price come back — never the whole record.
+    //
+    // The catalog is far larger than any one response, so the caller works through the results a
+    // page at a time: when more matches remain, `hasMore` is true and `nextCursor` carries the
+    // position to resume from. A page is therefore never silently truncated, and the caller never
+    // has to ask for everything at once.
+    //
+    // An unknown category is simply an empty page, not a 404 — the catalog holding nothing under
+    // that name is an answer, not a failure.
+    resource function get categories/[string category]/products(string? cursor, decimal? maxPrice,
+            int 'limit = DEFAULT_PAGE_SIZE) returns CategoryProductPage|http:BadRequest|http:BadGateway {
+        string trimmedCategory = category.trim();
+        if trimmedCategory.length() == 0 {
+            return <http:BadRequest>{
+                body: {message: "A category must be provided"}
+            };
+        }
+        if 'limit < 1 || 'limit > MAX_PAGE_SIZE {
+            return <http:BadRequest>{
+                body: {message: string `limit must be between 1 and ${MAX_PAGE_SIZE}`}
+            };
+        }
+
+        CursorState? startAfter = ();
+        if cursor is string {
+            CursorState|error decoded = decodeCursor(cursor);
+            if decoded is error {
+                return <http:BadRequest>{
+                    body: {message: "cursor is not a valid continuation token"}
+                };
+            }
+            // A cursor is a position within one category's results; replaying it against another
+            // category would resume from a meaningless place.
+            if decoded.category != trimmedCategory {
+                return <http:BadRequest>{
+                    body: {message: "cursor belongs to a different category"}
+                };
+            }
+            startAfter = decoded;
+        }
+
+        CategoryProductPage|error page = browseCategory(trimmedCategory, maxPrice, 'limit, startAfter);
+        if page is error {
+            log:printError("Failed to browse catalog category in DynamoDB", page,
+                    tableName = catalogTableName, indexName = catalogCategoryIndexName,
+                    category = trimmedCategory);
+            return <http:BadGateway>{
+                body: {message: "Unable to reach the catalog storage right now. Please try again later."}
+            };
+        }
+
+        return page;
+    }
+
+    // Summarises the catalog: every category currently holding products, and roughly how many are
+    // in each. The counts are approximate — the index backing them is eventually consistent — and
+    // are tallied by streaming category names alone, so no product is ever pulled into memory.
+    resource function get categories() returns CategorySummaryResponse|http:BadGateway {
+        CategorySummaryResponse|error summary = summarizeCategories();
+        if summary is error {
+            log:printError("Failed to summarise catalog categories in DynamoDB", summary,
+                    tableName = catalogTableName, indexName = catalogCategoryIndexName);
+            return <http:BadGateway>{
+                body: {message: "Unable to reach the catalog storage right now. Please try again later."}
+            };
+        }
+
+        return summary;
+    }
 }

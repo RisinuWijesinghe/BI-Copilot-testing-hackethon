@@ -50,3 +50,42 @@ public type ProductLookupResult record {|
 public type ProductBatchLookupResponse record {|
     ProductLookupResult[] results;
 |};
+
+// A product as returned by a category listing. These responses get large, so only the three
+// fields a browsing caller needs are sent back rather than the whole stored record.
+public type ProductSummary record {|
+    string sku;
+    string name;
+    decimal price;
+|};
+
+// One page of a category listing. `nextCursor` is present exactly when more matching products
+// remain, so a caller can always tell a complete result from a partial one and work through the
+// rest — it is never silently truncated.
+public type CategoryProductPage record {|
+    string category;
+    ProductSummary[] products;
+    boolean hasMore;
+    string? nextCursor;
+|};
+
+// Where a page stopped, carried inside the opaque cursor. This is the index key of the last
+// product returned, so the next page resumes exactly after it. `price` stays a string to keep
+// DynamoDB's own numeric representation intact across the round trip, and the category is
+// carried along so a cursor cannot be replayed against a different category.
+type CursorState record {|
+    string category;
+    string price;
+    string sku;
+|};
+
+// Approximate number of products currently held in one category.
+public type CategoryCount record {|
+    string category;
+    int approximateProductCount;
+|};
+
+// Response body for the catalog summary: every category currently holding at least one product.
+public type CategorySummaryResponse record {|
+    CategoryCount[] categories;
+|};
