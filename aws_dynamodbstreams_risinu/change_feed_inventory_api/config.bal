@@ -1,12 +1,11 @@
-// AWS region the DynamoDB tables live in.
+// AWS region the DynamoDB change feeds live in.
 configurable string awsRegion = ?;
 
-// IAM role to assume via AWS STS in order to obtain temporary credentials.
-configurable string roleArnToAssume = ?;
-
-// Base (source) credentials used to call AWS STS AssumeRole.
-configurable string sourceAccessKeyId = ?;
-configurable string sourceSecretAccessKey = ?;
+// IAM Identity Center (SSO) session details used to obtain credentials.
+configurable string ssoStartUrl = ?;
+configurable string ssoRegion = ?;
+configurable string ssoAccountId = ?;
+configurable string ssoRoleName = ?;
 
 // Port the change feed inventory HTTP API listens on.
 configurable int servicePort = 8080;
