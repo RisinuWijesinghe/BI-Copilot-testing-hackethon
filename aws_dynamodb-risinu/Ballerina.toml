@@ -1,0 +1,3 @@
+[workspace]
+title = "AWS DynamoDB-Risinu"
+packages = ["game_leaderboard_api"]
