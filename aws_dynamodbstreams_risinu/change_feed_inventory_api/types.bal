@@ -1,25 +1,12 @@
-# Represents a single DynamoDB table that has a change feed (DynamoDB Streams) enabled.
-public type ChangeFeedEntry record {|
-    # Name of the DynamoDB table
-    string tableName;
-    # Identifier (ARN) of the table's change feed
-    string streamId;
-    # Timestamp label AWS attaches to the change feed
-    string streamLabel;
-|};
-
 # Generic error response returned when the upstream change feed service cannot be reached.
 public type ChangeFeedServiceError record {|
-    string message;
-|};
-
-# Error response returned when the requested table has no change feed.
-public type ChangeFeedNotFoundError record {|
+    # Short, generic explanation safe to show to callers
     string message;
 |};
 
 # Error response returned when the request is malformed.
 public type ChangeFeedBadRequestError record {|
+    # Short explanation of what was wrong with the request
     string message;
 |};
 
@@ -39,7 +26,6 @@ public enum ChangeFeedViewType {
     NEW_AND_OLD_IMAGES = "NEW_AND_OLD_IMAGES"
 }
 
-
 # One attribute of a table's primary key.
 public type KeyAttribute record {|
     # Name of the attribute
@@ -58,11 +44,11 @@ public type ShardSummary record {|
     int closedShards;
 |};
 
-# Detailed view of a single table's change feed.
+# Detailed view of a single change feed.
 public type ChangeFeedDetail record {|
-    # Name of the DynamoDB table
+    # Name of the DynamoDB table the change feed belongs to
     string tableName;
-    # Identifier (ARN) of the table's change feed
+    # Identifier (ARN) of the change feed, as pasted from the AWS console
     string streamId;
     # Timestamp label AWS attaches to the change feed
     string streamLabel;
@@ -74,4 +60,12 @@ public type ChangeFeedDetail record {|
     KeyAttribute[] keyAttributes;
     # How the feed is currently split across shards
     ShardSummary shards;
+|};
+
+# Answer to "can this change feed be read from right now?"
+public type ChangeFeedReadiness record {|
+    # Whether the feed can be read from right now
+    boolean ready;
+    # A one-line explanation, present only when `ready` is false
+    string reason?;
 |};

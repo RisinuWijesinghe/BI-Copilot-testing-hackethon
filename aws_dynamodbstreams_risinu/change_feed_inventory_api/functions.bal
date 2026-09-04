@@ -1,93 +1,136 @@
-import ballerinax/aws.dynamodb;
 import ballerinax/aws.dynamodbstreams;
 
 // Generic, caller-safe message. AWS error details, request identifiers, and credentials must never surface here.
 const string CHANGE_FEED_SERVICE_UNREACHABLE = "unable to reach the change feed service";
 
-# Marker error signalling that the requested table has no change feed.
-type ChangeFeedNotFound distinct error;
-
-# Retrieves the change feed (DynamoDB Streams) entries for every table in the account.
-# Iterates the full account-wide table listing, page by page, and describes each table to
-# determine whether it has a change feed enabled.
+# Retrieves the full change feed detail for a single change feed: its lifecycle status, the kind of item data
+# each change record carries, its primary key attributes, and its current shard composition.
 #
-# + return - the list of change feed entries, or an error if AWS could not be reached
-function getChangeFeedEntries() returns ChangeFeedEntry[]|error {
-    stream<string, dynamodb:Error?> tableNames = check dynamoDbClient->listTables();
-
-    ChangeFeedEntry[] changeFeedEntries = [];
-    check from string tableName in tableNames
-        do {
-            dynamodb:TableDescription tableDescription = check dynamoDbClient->describeTable(tableName);
-            dynamodb:StreamSpecification? streamSpecification = tableDescription?.StreamSpecification;
-            if streamSpecification is dynamodb:StreamSpecification && streamSpecification.StreamEnabled {
-                string? streamId = tableDescription?.LastDecreaseDateTimeatestStreamArn;
-                string? streamLabel = tableDescription?.LatestStreamLabel;
-                if streamId is string && streamLabel is string {
-                    changeFeedEntries.push({
-                        tableName,
-                        streamId,
-                        streamLabel
-                    });
-                }
-            }
-        };
-    return changeFeedEntries;
+# + streamId - the change feed identifier (stream ARN), as pasted from the AWS console
+# + return - the change feed detail, or an error if AWS could not be reached
+function getChangeFeedDetail(string streamId) returns ChangeFeedDetail|error {
+    [dynamodbstreams:StreamDescription, dynamodbstreams:Shard[]] [description, shards] = check describeFullStream(streamId);
+    ShardSummary shardSummary = computeShardSummary(shards);
+    return buildChangeFeedDetail(streamId, description, shardSummary);
 }
 
-# Retrieves the full change feed detail for a single table: its lifecycle status, the kind of item data each
-# change record carries, its primary key attributes, and its current shard composition.
+# Determines whether a change feed can be read from right now: it must be live, and a read position (shard
+# iterator) must actually be obtainable for at least one of its shards.
 #
-# + tableName - the name of the table to look up
-# + return - the change feed detail, a `ChangeFeedNotFound` error if the table has no change feed, or a plain
-# error if AWS could not be reached
-function getChangeFeedDetail(string tableName) returns ChangeFeedDetail|ChangeFeedNotFound|error {
-    dynamodb:TableDescription tableDescription = check dynamoDbClient->describeTable(tableName);
+# + streamId - the change feed identifier (stream ARN), as pasted from the AWS console
+# + return - the readiness answer, or an error if AWS could not be reached
+function getChangeFeedReadiness(string streamId) returns ChangeFeedReadiness|error {
+    [dynamodbstreams:StreamDescription, dynamodbstreams:Shard[]] [description, shards] = check describeFullStream(streamId);
 
-    dynamodb:StreamSpecification? streamSpecification = tableDescription?.StreamSpecification;
-    string? streamId = tableDescription?.LastDecreaseDateTimeatestStreamArn;
-    string? streamLabel = tableDescription?.LatestStreamLabel;
-    if streamSpecification !is dynamodb:StreamSpecification || !streamSpecification.StreamEnabled
-            || streamId !is string || streamLabel !is string {
-        return error ChangeFeedNotFound(string `table '${tableName}' has no change feed`);
+    ChangeFeedReadiness? notReady = checkLiveAndHasShards(description.streamStatus, shards);
+    if notReady is ChangeFeedReadiness {
+        return notReady;
     }
 
-    KeyAttribute[] keyAttributes = [];
-    dynamodb:KeySchemaElement[]? keySchema = tableDescription?.KeySchema;
-    if keySchema is dynamodb:KeySchemaElement[] {
-        foreach dynamodb:KeySchemaElement keySchemaElement in keySchema {
-            keyAttributes.push({
-                attributeName: keySchemaElement.AttributeName,
-                partitionKey: keySchemaElement.KeyType == dynamodb:HASH
-            });
-        }
+    boolean readableShardFound = check findReadableShard(streamId, shards);
+    if readableShardFound {
+        return {ready: true};
     }
+    return {ready: false, reason: "could not obtain a read position for any shard"};
+}
 
-    [dynamodbstreams:StreamStatus, ShardSummary] [streamStatus, shardSummary] = check describeFullStream(streamId);
-    ChangeFeedViewType viewType = mapViewType(streamSpecification?.StreamViewType);
-
+# Assembles the change feed detail response from an already-fetched stream description and shard summary.
+# Pure function - performs no network calls - kept separate so it can be unit tested without AWS.
+#
+# + streamId - the change feed identifier (stream ARN)
+# + description - the stream description already fetched from AWS
+# + shardSummary - the shard summary already computed from the full shard listing
+# + return - the assembled change feed detail, or an error if the description is missing required fields
+function buildChangeFeedDetail(string streamId, dynamodbstreams:StreamDescription description, ShardSummary shardSummary)
+        returns ChangeFeedDetail|error {
+    string? tableName = description.tableName;
+    string? streamLabel = description.streamLabel;
+    if tableName is () || streamLabel is () {
+        return error("change feed description was missing required fields");
+    }
     return {
         tableName,
         streamId,
         streamLabel,
-        status: mapStreamStatus(streamStatus),
-        viewType,
-        keyAttributes,
+        status: mapStreamStatus(description.streamStatus),
+        viewType: mapViewType(description.streamViewType),
+        keyAttributes: extractKeyAttributes(description.keySchema),
         shards: shardSummary
     };
 }
 
-# Walks every page of shards for a change feed, summarizing how many are open (still accepting writes) versus
-# closed, since busy feeds have more shards than fit in a single response. Also returns the stream's status, taken
-# from the first page since it applies to the stream as a whole.
+# Decides whether a feed is disqualified from being read right now based only on its status and shard list,
+# without attempting to obtain a shard iterator. Pure function.
 #
-# + streamId - the ARN of the change feed
-# + return - the stream status together with the shard summary, or an error if AWS could not be reached
-function describeFullStream(string streamId) returns [dynamodbstreams:StreamStatus, ShardSummary]|error {
-    int totalShards = 0;
-    int openShards = 0;
-    int closedShards = 0;
-    dynamodbstreams:StreamStatus? streamStatus = ();
+# + streamStatus - the stream's current status
+# + shards - the full shard listing
+# + return - a concrete not-ready answer if the feed is not live or has no shards, `()` if it qualifies for the
+# iterator check
+function checkLiveAndHasShards(dynamodbstreams:StreamStatus? streamStatus, dynamodbstreams:Shard[] shards) returns ChangeFeedReadiness? {
+    ChangeFeedStatus status = mapStreamStatus(streamStatus);
+    if status != CHANGE_FEED_LIVE {
+        return {ready: false, reason: string `change feed is not live (currently ${status})`};
+    }
+    if shards.length() == 0 {
+        return {ready: false, reason: "change feed has no shards"};
+    }
+    return ();
+}
+
+# Attempts to obtain a shard iterator for each shard in turn, stopping at the first success. This is the only
+# network-calling piece of the readiness check and is intentionally kept thin.
+#
+# + streamId - the change feed identifier (stream ARN)
+# + shards - the full shard listing
+# + return - true if a read position could be obtained for at least one shard, false otherwise, or an error if
+# AWS could not be reached
+function findReadableShard(string streamId, dynamodbstreams:Shard[] shards) returns boolean|error {
+    foreach dynamodbstreams:Shard shard in shards {
+        string? shardId = shard.shardId;
+        if shardId is string {
+            string|dynamodbstreams:Error shardIterator = dynamoDbStreamsClient->getShardIterator({
+                streamArn: streamId,
+                shardId,
+                shardIteratorType: dynamodbstreams:TRIM_HORIZON
+            });
+            if shardIterator is string {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+# Extracts the primary key attributes from a key schema, flagging the HASH attribute as the partition key.
+# Pure function.
+#
+# + keySchema - the table's key schema, as returned in the stream description
+# + return - the list of key attributes
+function extractKeyAttributes(dynamodbstreams:KeySchemaElement[]? keySchema) returns KeyAttribute[] {
+    KeyAttribute[] keyAttributes = [];
+    if keySchema is dynamodbstreams:KeySchemaElement[] {
+        foreach dynamodbstreams:KeySchemaElement keySchemaElement in keySchema {
+            string? attributeName = keySchemaElement.attributeName;
+            if attributeName is string {
+                keyAttributes.push({
+                    attributeName,
+                    partitionKey: keySchemaElement.keyType == dynamodbstreams:HASH
+                });
+            }
+        }
+    }
+    return keyAttributes;
+}
+
+# Walks every page of shards for a change feed, since busy feeds have more shards than fit in a single response.
+# Returns the full stream description from the first page (status, view type, key schema, and table name apply
+# to the stream as a whole) together with the complete shard listing.
+#
+# + streamId - the change feed identifier (stream ARN)
+# + return - the stream description together with every shard, or an error if AWS could not be reached
+function describeFullStream(string streamId) returns [dynamodbstreams:StreamDescription, dynamodbstreams:Shard[]]|error {
+    dynamodbstreams:StreamDescription? firstDescription = ();
+    dynamodbstreams:Shard[] allShards = [];
 
     string? exclusiveStartShardId = ();
     boolean hasMorePages = true;
@@ -97,22 +140,14 @@ function describeFullStream(string streamId) returns [dynamodbstreams:StreamStat
             : {streamArn: streamId};
         dynamodbstreams:StreamDescription description = check dynamoDbStreamsClient->describeStream(describeStreamInput);
 
-        if streamStatus is () {
-            streamStatus = description.streamStatus;
+        if firstDescription is () {
+            firstDescription = description;
         }
 
         dynamodbstreams:Shard[]? shards = description.shards;
         if shards is dynamodbstreams:Shard[] {
             foreach dynamodbstreams:Shard shard in shards {
-                totalShards += 1;
-                dynamodbstreams:SequenceNumberRange? sequenceNumberRange = shard.sequenceNumberRange;
-                boolean isClosed = sequenceNumberRange is dynamodbstreams:SequenceNumberRange
-                    && sequenceNumberRange.endingSequenceNumber is string;
-                if isClosed {
-                    closedShards += 1;
-                } else {
-                    openShards += 1;
-                }
+                allShards.push(shard);
             }
         }
 
@@ -124,23 +159,47 @@ function describeFullStream(string streamId) returns [dynamodbstreams:StreamStat
         }
     }
 
-    if streamStatus is () {
-        return error("change feed status was not returned by AWS");
+    if firstDescription is () {
+        return error("change feed description was not returned by AWS");
     }
+    return [firstDescription, allShards];
+}
 
-    ShardSummary shardSummary = {
-        totalShards,
+# Counts how many shards are open (still accepting writes) versus closed. Pure function.
+#
+# + shards - the full shard listing
+# + return - the shard summary
+function computeShardSummary(dynamodbstreams:Shard[] shards) returns ShardSummary {
+    int openShards = 0;
+    int closedShards = 0;
+    foreach dynamodbstreams:Shard shard in shards {
+        if isShardClosed(shard) {
+            closedShards += 1;
+        } else {
+            openShards += 1;
+        }
+    }
+    return {
+        totalShards: shards.length(),
         openShards,
         closedShards
     };
-    return [streamStatus, shardSummary];
 }
 
-# Maps the AWS stream status to the change feed status vocabulary.
+# A shard is closed once it has an ending sequence number. Pure function.
+#
+# + shard - the shard to inspect
+# + return - true if the shard is closed
+function isShardClosed(dynamodbstreams:Shard shard) returns boolean {
+    dynamodbstreams:SequenceNumberRange? sequenceNumberRange = shard.sequenceNumberRange;
+    return sequenceNumberRange is dynamodbstreams:SequenceNumberRange && sequenceNumberRange.endingSequenceNumber is string;
+}
+
+# Maps the AWS stream status to the change feed status vocabulary. Pure function.
 #
 # + streamStatus - the AWS stream status
 # + return - the corresponding change feed status
-function mapStreamStatus(dynamodbstreams:StreamStatus streamStatus) returns ChangeFeedStatus {
+function mapStreamStatus(dynamodbstreams:StreamStatus? streamStatus) returns ChangeFeedStatus {
     match streamStatus {
         dynamodbstreams:ENABLING => {
             return CHANGE_FEED_ENABLING;
@@ -158,7 +217,7 @@ function mapStreamStatus(dynamodbstreams:StreamStatus streamStatus) returns Chan
 }
 
 # Maps the AWS stream view type to the change feed view-type vocabulary, defaulting to `KEYS_ONLY` in the
-# unexpected case that AWS omits it.
+# unexpected case that AWS omits it. Pure function.
 #
 # + streamViewType - the AWS stream view type
 # + return - the corresponding change feed view type
