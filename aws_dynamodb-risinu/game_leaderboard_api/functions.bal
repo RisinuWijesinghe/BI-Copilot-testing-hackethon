@@ -1,5 +1,4 @@
 import ballerina/log;
-import ballerina/lang.runtime;
 import ballerinax/aws.dynamodb;
 
 const string GAME_ID_ATTR = "GameId";
@@ -9,33 +8,23 @@ const string SCORE_ATTR = "Score";
 // Signals that a requested player does not have an entry on the given game's leaderboard.
 public type PlayerNotFoundError distinct error;
 
-// Ensures the leaderboard table exists and is ACTIVE before the service starts serving traffic.
-// If the table does not exist, it is created. Waits until the table becomes usable.
+// Confirms the leaderboard table (provisioned externally by Terraform) exists and is ACTIVE
+// before the service starts serving traffic. Does not create the table and does not wait for
+// it to become ready — if it isn't there or isn't usable yet, startup fails with a clear log
+// message rather than serving traffic against unusable storage.
 function ensureLeaderboardTableReady() returns error? {
     dynamodb:TableDescription|dynamodb:Error description = dynamoDbClient->describeTable(leaderboardTableName);
     if description is dynamodb:Error {
-        log:printInfo("Leaderboard table not found, creating it", tableName = leaderboardTableName);
-        dynamodb:TableDescription created = check dynamoDbClient->createTable({
-            TableName: leaderboardTableName,
-            AttributeDefinitions: [
-                {AttributeName: GAME_ID_ATTR, AttributeType: dynamodb:S},
-                {AttributeName: PLAYER_NAME_ATTR, AttributeType: dynamodb:S}
-            ],
-            KeySchema: [
-                {AttributeName: GAME_ID_ATTR, KeyType: dynamodb:HASH},
-                {AttributeName: PLAYER_NAME_ATTR, KeyType: dynamodb:RANGE}
-            ],
-            BillingMode: dynamodb:PAY_PER_REQUEST
-        });
-        description = created;
+        log:printError("Leaderboard table could not be described; refusing to start",
+                description, tableName = leaderboardTableName);
+        return error("Leaderboard table is not accessible; the service will not start");
     }
 
-    dynamodb:TableDescription tableDescription = check description;
-    dynamodb:TableStatus? tableStatus = tableDescription?.TableStatus;
-    while tableStatus != dynamodb:ACTIVE {
-        runtime:sleep(2);
-        dynamodb:TableDescription latest = check dynamoDbClient->describeTable(leaderboardTableName);
-        tableStatus = latest?.TableStatus;
+    dynamodb:TableStatus? tableStatus = description?.TableStatus;
+    if tableStatus != dynamodb:ACTIVE {
+        log:printError("Leaderboard table is not ACTIVE; refusing to start",
+                tableName = leaderboardTableName, tableStatus = tableStatus.toString());
+        return error("Leaderboard table is not ready; the service will not start");
     }
     log:printInfo("Leaderboard table is ready", tableName = leaderboardTableName);
 }
@@ -249,12 +238,4 @@ function removePlayer(string gameId, string playerName) returns PlayerRemoved|Pl
     }
 
     return {gameId, playerName, score};
-}
-
-// Lists the leaderboard tables visible to this deployment's AWS account.
-function listLeaderboardTables() returns string[]|error {
-    stream<string, dynamodb:Error?> tableNames = check dynamoDbClient->listTables();
-    string[] tables = check from string tableName in tableNames
-        select tableName;
-    return tables;
 }

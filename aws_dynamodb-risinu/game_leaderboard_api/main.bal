@@ -163,18 +163,4 @@ service /leaderboard on leaderboardListener {
         }
         return result;
     }
-
-    // Read-only endpoint for ops: lists the leaderboard tables this deployment can see in the
-    // account, so staging and production can be told apart.
-    resource function get tables()
-            returns TableList|http:BadGateway {
-        string[]|error tableNames = listLeaderboardTables();
-        if tableNames is error {
-            log:printError("Failed to list DynamoDB tables", tableNames);
-            return <http:BadGateway>{
-                body: {message: "Unable to reach the leaderboard storage right now. Please try again later."}
-            };
-        }
-        return {tableNames};
-    }
 }

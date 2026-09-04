@@ -1,9 +1,3 @@
-// Request payload for submitting a player's score.
-public type ScoreSubmission record {|
-    string playerName;
-    decimal score;
-|};
-
 // A single leaderboard entry returned to the caller.
 public type LeaderboardEntry record {|
     string playerName;
@@ -39,11 +33,6 @@ public type PlayerStanding record {|
     decimal score;
 |};
 
-// Request payload for changing a player's display name.
-public type RenameRequest record {|
-    string newPlayerName;
-|};
-
 // Response for a successful display name change, including the previous name.
 public type NameChanged record {|
     string gameId;
@@ -59,12 +48,3 @@ public type PlayerRemoved record {|
     decimal score;
 |};
 
-// Response body listing the leaderboard tables visible in this account.
-public type TableList record {|
-    string[] tableNames;
-|};
-
-// Generic error message body.
-public type ErrorDetail record {|
-    string message;
-|};
